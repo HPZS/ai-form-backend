@@ -4,11 +4,12 @@
 *.test
 *.out
 
-# 私有运行时配置(绝不入库)
+# 私有运行时配置(绝不入库);.env.example 是无密钥模板,应入库
 /config/private/
 /prompts/private/
 .env
 .env.*
+!.env.example
 
 # 本地数据库与日志
 *.db
