@@ -61,15 +61,15 @@ export default function Upstreams() {
   ];
 
   return (
-    <Card title="AI 上游(OpenAI 兼容;按优先级升序故障切换,连续失败自动冷却 60 秒)">
+    <Card className="data-card" title="上游列表" headerExtraContent="按优先级升序故障切换，连续失败自动冷却 60 秒">
       <Table columns={columns} dataSource={rows} pagination={false} size="small" />
-      <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+      <div className="create-toolbar">
         <Input placeholder="名称" value={draft.name} onChange={(v) => setDraft({ ...draft, name: v })} style={{ width: 120 }} />
         <Input placeholder="https://xxx/v1" value={draft.baseUrl} onChange={(v) => setDraft({ ...draft, baseUrl: v })} style={{ flex: 1, minWidth: 220 }} />
         <Input placeholder="sk-..." value={draft.apiKey} onChange={(v) => setDraft({ ...draft, apiKey: v })} style={{ width: 170 }} />
         <Button theme="solid" onClick={create} disabled={!draft.name || !draft.baseUrl || !draft.apiKey}>新增上游</Button>
       </div>
-      <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 8 }}>
+      <Typography.Text type="tertiary" size="small" className="card-note">
         密钥修改即时生效,无需重启;所有上游统一 OpenAI 格式,模型名在「能力配置」里统一设置。
       </Typography.Text>
     </Card>

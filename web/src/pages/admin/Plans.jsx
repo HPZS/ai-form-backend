@@ -47,9 +47,9 @@ export default function Plans() {
   ];
 
   return (
-    <Card title="套餐管理(改价只影响新订单,已发额度不受影响)">
+    <Card className="data-card" title="套餐列表" headerExtraContent="改价仅影响新订单，已发额度不受影响">
       <Table columns={columns} dataSource={rows} pagination={false} size="small" />
-      <div style={{ display: 'flex', gap: 8, marginTop: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="create-toolbar">
         <Input placeholder="名称" value={draft.name} onChange={(v) => setDraft({ ...draft, name: v })} style={{ width: 120 }} />
         <InputNumber prefix="价格(分)" value={draft.priceCents} onChange={(v) => setDraft({ ...draft, priceCents: v })} min={0} style={{ width: 150 }} />
         <InputNumber prefix="积分" value={draft.totalCredits} onChange={(v) => setDraft({ ...draft, totalCredits: v })} min={1} style={{ width: 140 }} />

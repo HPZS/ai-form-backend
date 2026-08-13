@@ -37,7 +37,7 @@ export default function Capabilities() {
   ];
 
   return (
-    <Card title="能力配置(模型名对所有上游通用;改动只影响新请求)">
+    <Card className="data-card" title="能力列表" headerExtraContent="模型名对所有上游通用，改动仅影响新请求">
       <Table columns={columns} dataSource={rows} pagination={false} size="small" />
     </Card>
   );

@@ -48,9 +48,9 @@ export default function Users() {
   ];
 
   return (
-    <Card title="用户管理">
+    <Card className="data-card" title="用户列表">
       <Table columns={columns} dataSource={rows} pagination={false} size="small" rowKey="ID" loading={loading && rows.length === 0} />
-      <div style={{ textAlign: 'center', marginTop: 12 }}>
+      <div className="load-more-row">
         {!done && rows.length > 0 && (
           <Button loading={loading} onClick={() => load(rows[rows.length - 1].ID)}>加载更多</Button>
         )}

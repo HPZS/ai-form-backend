@@ -22,7 +22,7 @@ function Protected({ children }) {
     if (!hasTokens()) { setLoading(false); return; }
     get('/v1/me').then(setMe).catch(() => {}).finally(() => setLoading(false));
   }, []);
-  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 120 }}><Spin size="large" /></div>;
+  if (loading) return <div className="app-loading"><Spin size="large" tip="正在加载控制台..." /></div>;
   if (!me) return <Navigate to="/login" replace />;
   return (
     <MeContext.Provider value={{ me, reload: () => get('/v1/me').then(setMe) }}>

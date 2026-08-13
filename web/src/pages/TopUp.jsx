@@ -55,9 +55,9 @@ export default function TopUp() {
   };
 
   return (
-    <div style={{ maxWidth: 900 }}>
-      <Card style={{ marginBottom: 16 }}>
-        <span style={{ marginRight: 12 }}>支付方式:</span>
+    <div className="topup-page">
+      <Card className="payment-method-card">
+        <span className="field-label">支付方式</span>
         <RadioGroup value={method} onChange={(e) => setMethod(e.target.value)} type="button">
           <Radio value="alipay">支付宝</Radio>
           <Radio value="wxpay">微信支付</Radio>
@@ -65,13 +65,13 @@ export default function TopUp() {
       </Card>
       <Row gutter={16}>
         {plans.map((p) => (
-          <Col span={8} key={p.id}>
+          <Col xs={24} sm={12} lg={8} key={p.id}>
             <Card
               title={p.name}
               headerExtraContent={<Tag color="blue">{p.durationDays} 天</Tag>}
-              style={{ textAlign: 'center' }}
+              className="plan-card"
             >
-              <Typography.Title heading={2}>¥{(p.priceCents / 100).toFixed(2)}</Typography.Title>
+              <Typography.Title heading={2} className="plan-price"><small>¥</small>{(p.priceCents / 100).toFixed(2)}</Typography.Title>
               <Typography.Paragraph type="secondary">{p.credits} 积分 · 有效期 {p.durationDays} 天</Typography.Paragraph>
               <Typography.Paragraph type="tertiary" size="small">到期未用完的积分清零,可叠加购买</Typography.Paragraph>
               <Button theme="solid" block loading={buying === p.id} onClick={() => buy(p)}>立即购买</Button>

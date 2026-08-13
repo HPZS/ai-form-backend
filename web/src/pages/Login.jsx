@@ -46,11 +46,16 @@ export default function Login() {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--semi-color-bg-0)',
-    }}>
-      <Card style={{ width: 400 }} title="AI智能录入助手">
+    <div className="login-page">
+      <a href="/" className="login-brand">
+        <span className="brand-mark" aria-hidden="true"><span /></span>
+        <span>AI 智能录入助手</span>
+      </a>
+      <Card className="login-card" bordered={false}>
+        <div className="login-heading">
+          <Typography.Title heading={3}>欢迎回来</Typography.Title>
+          <Typography.Text type="tertiary">登录你的账户以继续使用控制台</Typography.Text>
+        </div>
         <Tabs type="line">
           <TabPane tab="验证码登录" itemKey="code">
             <Form onSubmit={loginCode}>
@@ -63,8 +68,8 @@ export default function Login() {
                   {cooldown > 0 ? `${cooldown}s` : '发送验证码'}
                 </Button>
               </div>
-              <Button theme="solid" htmlType="submit" block loading={busy}>登录 / 注册</Button>
-              <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 8 }}>
+              <Button theme="solid" htmlType="submit" block loading={busy} size="large">登录 / 注册</Button>
+              <Typography.Text type="tertiary" size="small" className="login-tip">
                 首次登录自动注册,并赠送 14 天试用积分
               </Typography.Text>
             </Form>
@@ -73,14 +78,15 @@ export default function Login() {
             <Form onSubmit={loginPassword}>
               <Form.Input field="email2" label="邮箱" initValue={email} onChange={setEmail} placeholder="you@example.com" />
               <Form.Input field="password" label="密码" mode="password" initValue={password} onChange={setPassword} />
-              <Button theme="solid" htmlType="submit" block loading={busy}>登录</Button>
-              <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 8 }}>
+              <Button theme="solid" htmlType="submit" block loading={busy} size="large">登录</Button>
+              <Typography.Text type="tertiary" size="small" className="login-tip">
                 忘记密码:用验证码登录后,在个人中心重设
               </Typography.Text>
             </Form>
           </TabPane>
         </Tabs>
       </Card>
+      <div className="login-footer">安全、稳定的 AI 智能录入服务</div>
     </div>
   );
 }

@@ -40,9 +40,9 @@ export default function Ledger() {
   ];
 
   return (
-    <Card title="积分流水">
+    <Card className="data-card" title="流水记录">
       <Table columns={columns} dataSource={rows} pagination={false} rowKey="ID" size="small" loading={loading && rows.length === 0} />
-      <div style={{ textAlign: 'center', marginTop: 12 }}>
+      <div className="load-more-row">
         {!done && rows.length > 0 && (
           <Button loading={loading} onClick={() => load(rows[rows.length - 1].ID)}>加载更多</Button>
         )}
