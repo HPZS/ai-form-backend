@@ -102,6 +102,10 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			admin.PUT("/plans/:id", s.adminUpdatePlan)
 			admin.GET("/capability-prices", s.adminListPrices)
 			admin.PUT("/capability-prices/:capability", s.adminUpdatePrice)
+			admin.GET("/upstreams", s.adminListUpstreams)
+			admin.POST("/upstreams", s.adminCreateUpstream)
+			admin.PUT("/upstreams/:id", s.adminUpdateUpstream)
+			admin.DELETE("/upstreams/:id", s.adminDeleteUpstream)
 			admin.GET("/users", s.adminListUsers)
 		}
 	}
@@ -532,14 +536,17 @@ func (s *Server) adminListPrices(c *gin.Context) {
 }
 
 type priceReq struct {
-	Credits *int64 `json:"credits"`
-	Enabled *bool  `json:"enabled"`
+	Credits     *int64   `json:"credits"`
+	Enabled     *bool    `json:"enabled"`
+	Model       *string  `json:"model"`
+	Temperature *float64 `json:"temperature"`
+	MaxTokens   *int     `json:"maxTokens"`
 }
 
-// adminUpdatePrice 改价只影响之后的请求;在途请求与已建预占按价格快照执行。
+// adminUpdatePrice 改价/改模型只影响之后的请求;在途请求与已建预占按价格快照执行。
 func (s *Server) adminUpdatePrice(c *gin.Context) {
 	var req priceReq
-	if err := c.ShouldBindJSON(&req); err != nil || (req.Credits == nil && req.Enabled == nil) {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
@@ -554,10 +561,131 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 	if req.Enabled != nil {
 		updates["enabled"] = *req.Enabled
 	}
+	if req.Model != nil && *req.Model != "" {
+		updates["model"] = *req.Model
+	}
+	if req.Temperature != nil {
+		updates["temperature"] = *req.Temperature
+	}
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		updates["max_tokens"] = *req.MaxTokens
+	}
+	if len(updates) == 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "没有可更新的字段"})
+		return
+	}
 	r := s.db.Model(&model.CapabilityPrice{}).
 		Where("capability = ?", c.Param("capability")).Updates(updates)
 	if r.Error != nil || r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "CAPABILITY_NOT_FOUND"})
+		return
+	}
+	c.Status(204)
+}
+
+// ===== AI 上游管理(所有上游均为 OpenAI 兼容第三方;密钥常换,此处即改即生效) =====
+
+func maskKey(k string) string {
+	if len(k) <= 8 {
+		return "****"
+	}
+	return k[:4] + "****" + k[len(k)-4:]
+}
+
+func (s *Server) adminListUpstreams(c *gin.Context) {
+	var ups []model.AIUpstream
+	if err := s.db.Order("sort_order asc, id asc").Find(&ups).Error; err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	out := make([]gin.H, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, gin.H{
+			"id": u.ID, "name": u.Name, "baseUrl": u.BaseURL,
+			"apiKeyMasked": maskKey(u.APIKey), "enabled": u.Enabled, "sortOrder": u.SortOrder,
+		})
+	}
+	c.JSON(200, gin.H{"upstreams": out})
+}
+
+type upstreamReq struct {
+	Name      string `json:"name"`
+	BaseURL   string `json:"baseUrl"`
+	APIKey    string `json:"apiKey"` // 更新时留空 = 不改密钥
+	Enabled   *bool  `json:"enabled"`
+	SortOrder *int   `json:"sortOrder"`
+}
+
+func (s *Server) adminCreateUpstream(c *gin.Context) {
+	var req upstreamReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" || req.BaseURL == "" || req.APIKey == "" {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "name/baseUrl/apiKey 必填"})
+		return
+	}
+	if !strings.HasPrefix(req.BaseURL, "http://") && !strings.HasPrefix(req.BaseURL, "https://") {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "baseUrl 必须以 http(s):// 开头"})
+		return
+	}
+	u := model.AIUpstream{Name: req.Name, BaseURL: strings.TrimRight(req.BaseURL, "/"), APIKey: req.APIKey, Enabled: true}
+	if req.Enabled != nil {
+		u.Enabled = *req.Enabled
+	}
+	if req.SortOrder != nil {
+		u.SortOrder = *req.SortOrder
+	}
+	if err := s.db.Create(&u).Error; err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	c.JSON(200, gin.H{"id": u.ID})
+}
+
+func (s *Server) adminUpdateUpstream(c *gin.Context) {
+	var req upstreamReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	updates := map[string]any{}
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.BaseURL != "" {
+		if !strings.HasPrefix(req.BaseURL, "http://") && !strings.HasPrefix(req.BaseURL, "https://") {
+			c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "baseUrl 必须以 http(s):// 开头"})
+			return
+		}
+		updates["base_url"] = strings.TrimRight(req.BaseURL, "/")
+	}
+	if req.APIKey != "" {
+		updates["api_key"] = req.APIKey
+	}
+	if req.Enabled != nil {
+		updates["enabled"] = *req.Enabled
+	}
+	if req.SortOrder != nil {
+		updates["sort_order"] = *req.SortOrder
+	}
+	if len(updates) == 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "没有可更新的字段"})
+		return
+	}
+	r := s.db.Model(&model.AIUpstream{}).Where("id = ?", c.Param("id")).Updates(updates)
+	if r.Error != nil || r.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "UPSTREAM_NOT_FOUND"})
+		return
+	}
+	c.Status(204)
+}
+
+func (s *Server) adminDeleteUpstream(c *gin.Context) {
+	r := s.db.Delete(&model.AIUpstream{}, "id = ?", c.Param("id"))
+	if r.Error != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	if r.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "UPSTREAM_NOT_FOUND"})
 		return
 	}
 	c.Status(204)

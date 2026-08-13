@@ -1,6 +1,7 @@
 // ai-form-backend - AGPL-3.0
 // AI 上游调用:OpenAI 兼容协议 + 按序故障切换 + 冷却熔断(技术方案 v3 §6.6)。
-// 网络错误/超时/429/5xx/401/403 → 换下一候选;连续失败 3 次冷却 60 秒;
+// 上游列表与能力模型参数存数据库(管理台增删改,即时生效,不需重启)。
+// 网络错误/超时/429/5xx/401/403 → 换下一上游;连续失败 3 次冷却 60 秒;
 // 输出质量问题(JSON 不合规)不在本层处理,不触发切换。
 package ai
 
@@ -17,7 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HPZS/ai-form-backend/config"
+	"gorm.io/gorm"
+
+	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
 var ErrAllUpstreamsDown = errors.New("全部 AI 上游不可用")
@@ -48,16 +51,16 @@ type breakerState struct {
 }
 
 type Caller struct {
-	cfg  *config.AIConfig
+	db   *gorm.DB
 	http *http.Client
 
 	mu       sync.Mutex
-	breakers map[string]*breakerState // key = upstream 名
+	breakers map[int64]*breakerState // key = 上游 ID
 }
 
-func NewCaller(cfg *config.AIConfig) *Caller {
+func NewCaller(db *gorm.DB) *Caller {
 	return &Caller{
-		cfg: cfg,
+		db: db,
 		http: &http.Client{
 			Timeout: callTimeout,
 			Transport: &http.Transport{
@@ -65,24 +68,24 @@ func NewCaller(cfg *config.AIConfig) *Caller {
 				TLSHandshakeTimeout: dialTimeout,
 			},
 		},
-		breakers: map[string]*breakerState{},
+		breakers: map[int64]*breakerState{},
 	}
 }
 
-func (c *Caller) cooling(name string) bool {
+func (c *Caller) cooling(id int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, ok := c.breakers[name]
+	b, ok := c.breakers[id]
 	return ok && time.Now().Before(b.coolUntil)
 }
 
-func (c *Caller) markFail(name string) {
+func (c *Caller) markFail(id int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b := c.breakers[name]
+	b := c.breakers[id]
 	if b == nil {
 		b = &breakerState{}
-		c.breakers[name] = b
+		c.breakers[id] = b
 	}
 	b.fails++
 	if b.fails >= coolAfterFails {
@@ -91,33 +94,43 @@ func (c *Caller) markFail(name string) {
 	}
 }
 
-func (c *Caller) markOK(name string) {
+func (c *Caller) markOK(id int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.breakers, name)
+	delete(c.breakers, id)
 }
 
-// Call 按能力的候选链调用,自动切换。retrySameOnce 时对解析失败等场景由调用方自行重调。
+// Call 按启用上游的优先级顺序尝试,自动故障切换。
 func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMessage) (*CallResult, error) {
-	cc, ok := c.cfg.Capabilities[capability]
-	if !ok {
-		return nil, fmt.Errorf("能力 %s 未配置上游", capability)
+	var cap model.CapabilityPrice
+	if err := c.db.Where("capability = ?", capability).First(&cap).Error; err != nil {
+		return nil, fmt.Errorf("能力 %s 未配置", capability)
+	}
+	if cap.Model == "" {
+		return nil, fmt.Errorf("能力 %s 未配置模型,请在管理台设置", capability)
+	}
+	var ups []model.AIUpstream
+	if err := c.db.Where("enabled = ?", true).Order("sort_order asc, id asc").Find(&ups).Error; err != nil {
+		return nil, err
+	}
+	if len(ups) == 0 {
+		return nil, fmt.Errorf("%w: 没有启用的 AI 上游,请在管理台添加", ErrAllUpstreamsDown)
 	}
 	var lastErr error
-	for _, cand := range cc.Candidates {
-		if c.cooling(cand.Upstream) {
+	for _, up := range ups {
+		if c.cooling(up.ID) {
 			continue
 		}
-		res, err := c.callOnce(ctx, cand, cc, messages)
+		res, err := c.callOnce(ctx, up, cap, messages)
 		if err == nil {
-			c.markOK(cand.Upstream)
+			c.markOK(up.ID)
 			return res, nil
 		}
-		c.markFail(cand.Upstream)
+		c.markFail(up.ID)
 		lastErr = err
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("所有候选均在冷却中")
+		lastErr = fmt.Errorf("所有上游均在冷却中")
 	}
 	return nil, fmt.Errorf("%w: %v", ErrAllUpstreamsDown, lastErr)
 }
@@ -141,13 +154,12 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-func (c *Caller) callOnce(ctx context.Context, cand config.AICandidate, cc config.AICapability, messages []ChatMessage) (*CallResult, error) {
-	up := c.cfg.Upstreams[cand.Upstream]
+func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, cap model.CapabilityPrice, messages []ChatMessage) (*CallResult, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:       cand.Model,
+		Model:       cap.Model,
 		Messages:    messages,
-		Temperature: cc.Temperature,
-		MaxTokens:   cc.MaxTokens,
+		Temperature: cap.Temperature,
+		MaxTokens:   cap.MaxTokens,
 	})
 	if err != nil {
 		return nil, err
@@ -158,31 +170,31 @@ func (c *Caller) callOnce(ctx context.Context, cand config.AICandidate, cc confi
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+up.APIKey())
+	req.Header.Set("Authorization", "Bearer "+up.APIKey)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("上游 %s 请求失败: %w", cand.Upstream, err)
+		return nil, fmt.Errorf("上游 %s 请求失败: %w", up.Name, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, fmt.Errorf("上游 %s 读响应失败: %w", cand.Upstream, err)
+		return nil, fmt.Errorf("上游 %s 读响应失败: %w", up.Name, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("上游 %s 返回 %d: %.200s", cand.Upstream, resp.StatusCode, string(data))
+		return nil, fmt.Errorf("上游 %s 返回 %d: %.200s", up.Name, resp.StatusCode, string(data))
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(data, &cr); err != nil {
-		return nil, fmt.Errorf("上游 %s 响应格式异常: %w", cand.Upstream, err)
+		return nil, fmt.Errorf("上游 %s 响应格式异常: %w", up.Name, err)
 	}
 	if len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("上游 %s 返回空 choices", cand.Upstream)
+		return nil, fmt.Errorf("上游 %s 返回空 choices", up.Name)
 	}
 	return &CallResult{
 		Content:      cr.Choices[0].Message.Content,
-		Upstream:     cand.Upstream,
-		Model:        cand.Model,
+		Upstream:     up.Name,
+		Model:        cap.Model,
 		InputTokens:  cr.Usage.PromptTokens,
 		OutputTokens: cr.Usage.CompletionTokens,
 	}, nil

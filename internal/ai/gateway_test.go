@@ -38,7 +38,8 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 		UserID: u.ID, PlanID: 1, AmountTotal: 100,
 		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
 	})
-	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 5, Enabled: true})
+	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 5, Enabled: true, Model: "m", MaxTokens: 500})
+	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 
 	dir := t.TempDir()
 	writePrompt(t, dir, "match_columns")
@@ -46,8 +47,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller := NewCaller(testAIConfig("match_columns", upstream))
-	g := NewGateway(db, caller, prompts)
+	g := NewGateway(db, NewCaller(db), prompts)
 
 	var spec Spec
 	for _, sp := range Specs() {

@@ -45,7 +45,7 @@ func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&User{}, &EmailCode{}, &RefreshToken{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
-		&CapabilityPrice{}, &CreditLedger{}, &CreditHold{},
+		&CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
 		&AIRequest{}, &TaskMetric{},
 	); err != nil {
 		return fmt.Errorf("迁移失败: %w", err)

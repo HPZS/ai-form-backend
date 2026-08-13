@@ -7,8 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -27,8 +25,7 @@ type Config struct {
 	SMTP SMTPConfig
 	Epay EpayConfig
 
-	AIConfigPath string
-	PromptsDir   string
+	PromptsDir string
 }
 
 type SMTPConfig struct {
@@ -92,8 +89,7 @@ func Load() (*Config, error) {
 			PID: os.Getenv("EPAY_PID"),
 			Key: os.Getenv("EPAY_KEY"),
 		},
-		AIConfigPath: env("AI_CONFIG", "config/private/ai.yaml"),
-		PromptsDir:   env("PROMPTS_DIR", "prompts/private"),
+		PromptsDir: env("PROMPTS_DIR", "prompts/private"),
 	}
 	if c.JWTSecret == "" {
 		return nil, fmt.Errorf("必须设置 JWT_SECRET")
@@ -104,62 +100,4 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-// ===== AI 上游配置 =====
-
-type AIUpstream struct {
-	BaseURL   string `yaml:"baseUrl"`
-	APIKeyEnv string `yaml:"apiKeyEnv"`
-	apiKey    string
-}
-
-func (u *AIUpstream) APIKey() string { return u.apiKey }
-
-// SetAPIKey 供 LoadAI 与测试注入密钥。
-func (u *AIUpstream) SetAPIKey(k string) { u.apiKey = k }
-
-type AICandidate struct {
-	Upstream string `yaml:"upstream"`
-	Model    string `yaml:"model"`
-}
-
-type AICapability struct {
-	Candidates  []AICandidate `yaml:"candidates"`
-	Temperature float64       `yaml:"temperature"`
-	MaxTokens   int           `yaml:"maxTokens"`
-}
-
-type AIConfig struct {
-	Upstreams    map[string]*AIUpstream  `yaml:"upstreams"`
-	Capabilities map[string]AICapability `yaml:"capabilities"`
-}
-
-func LoadAI(path string) (*AIConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 AI 配置 %s 失败: %w", path, err)
-	}
-	var c AIConfig
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("解析 AI 配置失败: %w", err)
-	}
-	for name, up := range c.Upstreams {
-		if up.BaseURL == "" {
-			return nil, fmt.Errorf("上游 %s 缺少 baseUrl", name)
-		}
-		up.SetAPIKey(os.Getenv(up.APIKeyEnv))
-		if up.apiKey == "" {
-			return nil, fmt.Errorf("上游 %s 的密钥环境变量 %s 为空", name, up.APIKeyEnv)
-		}
-	}
-	for cap, cc := range c.Capabilities {
-		if len(cc.Candidates) == 0 {
-			return nil, fmt.Errorf("能力 %s 没有配置候选上游", cap)
-		}
-		for _, cand := range cc.Candidates {
-			if _, ok := c.Upstreams[cand.Upstream]; !ok {
-				return nil, fmt.Errorf("能力 %s 引用了不存在的上游 %s", cap, cand.Upstream)
-			}
-		}
-	}
-	return &c, nil
-}
+// AI 上游与能力模型参数不在此处:它们存数据库,由管理台维护(密钥常换,即改即生效)。

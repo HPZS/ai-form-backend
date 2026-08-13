@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -124,9 +123,14 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		}
 
 		// 3. 订阅与余额预检(减少白付模型成本;最终扣费在同事务内仍会复核)
-		price, err := g.capabilityPrice(spec.Name)
+		price, enabled, err := g.capabilityPrice(spec.Name)
 		if err != nil {
 			apiErr(c, 500, "INTERNAL", "内部错误")
+			return
+		}
+		if !enabled {
+			g.releaseLease(ar.ID)
+			apiErr(c, 403, "CAPABILITY_DISABLED", "该能力已停用")
 			return
 		}
 		hasSub, err := hasActiveSubscription(g.db, userID)
@@ -244,19 +248,16 @@ func (g *Gateway) finishFailed(id int64, status string, call *CallResult, prompt
 	g.db.Model(&model.AIRequest{}).Where("id = ?", id).Updates(fields)
 }
 
-func (g *Gateway) capabilityPrice(capability string) (int64, error) {
+func (g *Gateway) capabilityPrice(capability string) (price int64, enabled bool, err error) {
 	var p model.CapabilityPrice
-	err := g.db.Where("capability = ?", capability).First(&p).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, nil
+	e := g.db.Where("capability = ?", capability).First(&p).Error
+	if errors.Is(e, gorm.ErrRecordNotFound) {
+		return 0, true, nil
 	}
-	if err != nil {
-		return 0, err
+	if e != nil {
+		return 0, false, e
 	}
-	if !p.Enabled {
-		return 0, fmt.Errorf("能力已停用")
-	}
-	return p.Credits, nil
+	return p.Credits, p.Enabled, nil
 }
 
 func hasActiveSubscription(db *gorm.DB, userID int64) (bool, error) {

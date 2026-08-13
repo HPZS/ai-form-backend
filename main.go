@@ -32,24 +32,18 @@ func main() {
 		log.Fatalf("播种默认数据失败: %v", err)
 	}
 
-	aiCfg, err := config.LoadAI(cfg.AIConfigPath)
-	if err != nil {
-		log.Fatalf("AI 上游配置错误: %v", err)
-	}
 	specs := ai.Specs()
 	names := make([]string, len(specs))
 	for i, sp := range specs {
 		names[i] = sp.Name
-		if _, ok := aiCfg.Capabilities[sp.Name]; !ok {
-			log.Fatalf("AI 配置缺少能力 %s 的候选链", sp.Name)
-		}
 	}
 	prompts, err := ai.LoadPrompts(cfg.PromptsDir, names)
 	if err != nil {
 		log.Fatalf("提示词加载失败: %v", err)
 	}
 
-	gateway := ai.NewGateway(db, ai.NewCaller(aiCfg), prompts)
+	// AI 上游与能力模型参数在数据库中,由 /admin 管理台维护
+	gateway := ai.NewGateway(db, ai.NewCaller(db), prompts)
 	authSvc := auth.New(db, cfg.JWTSecret, cfg.HashPepper, cfg.AdminEmails)
 	mailer := email.New(cfg.SMTP)
 

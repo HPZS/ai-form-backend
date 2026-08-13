@@ -34,19 +34,21 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if priceCount == 0 {
+		// 模型名是占位默认值(所有上游统一 OpenAI 格式,模型名跨上游通用),管理台可改
+		const m = "gpt-4o-mini"
 		prices := []model.CapabilityPrice{
-			{Capability: "assess_page", Credits: 0, Enabled: true},
-			{Capability: "analyze_form", Credits: 5, Enabled: true},
-			{Capability: "pick_open_button", Credits: 0, Enabled: true},
-			{Capability: "pick_form", Credits: 0, Enabled: true},
-			{Capability: "match_columns", Credits: 5, Enabled: true},
-			{Capability: "suggest_profile", Credits: 0, Enabled: true},
-			{Capability: "detect_grouping", Credits: 0, Enabled: true},
-			{Capability: "generate_rule", Credits: 3, Enabled: true},
-			{Capability: "generate_field", Credits: 1, Enabled: true},
-			{Capability: "explain_failure", Credits: 0, Enabled: true},
-			{Capability: "classify_failure", Credits: 0, Enabled: true},
-			{Capability: "parse_command", Credits: 0, Enabled: true},
+			{Capability: "assess_page", Credits: 0, Enabled: true, Model: m, MaxTokens: 2000},
+			{Capability: "analyze_form", Credits: 5, Enabled: true, Model: m, MaxTokens: 2000},
+			{Capability: "pick_open_button", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
+			{Capability: "pick_form", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
+			{Capability: "match_columns", Credits: 5, Enabled: true, Model: m, MaxTokens: 2000},
+			{Capability: "suggest_profile", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
+			{Capability: "detect_grouping", Credits: 0, Enabled: true, Model: m, MaxTokens: 800},
+			{Capability: "generate_rule", Credits: 3, Enabled: true, Model: m, MaxTokens: 4000},
+			{Capability: "generate_field", Credits: 1, Enabled: true, Model: m, Temperature: 0.3, MaxTokens: 1000},
+			{Capability: "explain_failure", Credits: 0, Enabled: true, Model: m, MaxTokens: 1000},
+			{Capability: "classify_failure", Credits: 0, Enabled: true, Model: m, MaxTokens: 300},
+			{Capability: "parse_command", Credits: 0, Enabled: true, Model: m, MaxTokens: 1500},
 		}
 		if err := db.Create(&prices).Error; err != nil {
 			return fmt.Errorf("播种能力单价失败: %w", err)

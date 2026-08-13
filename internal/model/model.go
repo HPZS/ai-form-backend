@@ -98,11 +98,28 @@ type PaymentOrder struct {
 
 // ===== 积分(自建) =====
 
+// CapabilityPrice 能力配置:计费单价 + 模型参数,管理台可改、即时生效。
 type CapabilityPrice struct {
-	Capability string `gorm:"primaryKey;size:32"`
-	Credits    int64  `gorm:"not null"`
-	Enabled    bool   `gorm:"not null;default:true"`
-	UpdatedAt  time.Time
+	Capability  string  `gorm:"primaryKey;size:32"`
+	Credits     int64   `gorm:"not null"`
+	Enabled     bool    `gorm:"not null;default:true"`
+	Model       string  `gorm:"size:64;not null;default:''"` // 所有上游统一 OpenAI 格式,模型名跨上游通用
+	Temperature float64 `gorm:"not null;default:0"`
+	MaxTokens   int     `gorm:"not null;default:2000"`
+	UpdatedAt   time.Time
+}
+
+// AIUpstream OpenAI 兼容上游,管理台增删改;故障切换按 sort_order 升序尝试。
+// 模型密钥常换,放库里管理台即改即生效(可随时吊销轮换,风险与 JWT/pepper 不同类)。
+type AIUpstream struct {
+	ID        int64  `gorm:"primaryKey"`
+	Name      string `gorm:"size:64;not null"`
+	BaseURL   string `gorm:"size:255;not null"`
+	APIKey    string `gorm:"size:255;not null"`
+	Enabled   bool   `gorm:"not null;default:true"`
+	SortOrder int    `gorm:"not null;default:0"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // CreditLedger 只增不改的积分流水。负 delta=消耗,正 delta=冲正。

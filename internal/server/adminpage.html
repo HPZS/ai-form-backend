@@ -63,9 +63,23 @@
     </section>
 
     <section>
-      <h2>能力单价(改价后新请求生效;在途请求与预占按快照)</h2>
+      <h2>AI 上游(OpenAI 兼容;按优先级升序故障切换;密钥改完即生效)</h2>
+      <table id="upTable">
+        <thead><tr><th>名称</th><th>BaseURL</th><th>密钥(留空不改)</th><th>优先级</th><th>启用</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <input id="upName" placeholder="名称" style="width:100px">
+        <input id="upUrl" placeholder="https://xxx/v1" style="flex:1;min-width:200px">
+        <input id="upKey" placeholder="sk-..." style="width:160px">
+        <button id="btnAddUp" class="ghost">新增上游</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>能力配置(单价/模型/参数;改后新请求生效,在途请求与预占按快照)</h2>
       <table id="priceTable">
-        <thead><tr><th>能力</th><th>积分/次</th><th>启用</th><th></th></tr></thead>
+        <thead><tr><th>能力</th><th>积分/次</th><th>模型</th><th>温度</th><th>maxTokens</th><th>启用</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </section>
@@ -157,8 +171,52 @@ async function enter() {
   $('meBox').textContent = me.email + ' · 可用积分 ' + me.available;
   $('login').style.display = 'none';
   $('panel').style.display = '';
-  await Promise.all([loadPlans(), loadPrices(), loadUsers()]);
+  await Promise.all([loadPlans(), loadUpstreams(), loadPrices(), loadUsers()]);
 }
+
+async function loadUpstreams() {
+  const { upstreams } = await api('/v1/admin/upstreams');
+  const tb = $('upTable').querySelector('tbody');
+  tb.innerHTML = '';
+  for (const u of upstreams) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input value="${u.name}" data-k="name" style="width:90px"></td>
+      <td><input value="${u.baseUrl}" data-k="baseUrl" style="width:100%;min-width:200px"></td>
+      <td><input placeholder="${u.apiKeyMasked}" data-k="apiKey" style="width:130px"></td>
+      <td><input type="number" value="${u.sortOrder}" data-k="sortOrder" style="width:55px"></td>
+      <td><input type="checkbox" ${u.enabled ? 'checked' : ''} data-k="enabled"></td>
+      <td><button>保存</button> <button class="ghost" data-del>删除</button></td>`;
+    tr.querySelector('button').onclick = async () => {
+      const body = {
+        name: tr.querySelector('[data-k=name]').value,
+        baseUrl: tr.querySelector('[data-k=baseUrl]').value,
+        apiKey: tr.querySelector('[data-k=apiKey]').value,
+        sortOrder: +tr.querySelector('[data-k=sortOrder]').value,
+        enabled: tr.querySelector('[data-k=enabled]').checked,
+      };
+      try { await api('/v1/admin/upstreams/' + u.id, { method: 'PUT', body: JSON.stringify(body) }); say('上游已保存', true); await loadUpstreams(); }
+      catch (e) { say(e.message); }
+    };
+    tr.querySelector('[data-del]').onclick = async () => {
+      if (!confirm('删除上游 ' + u.name + ' ?')) return;
+      try { await api('/v1/admin/upstreams/' + u.id, { method: 'DELETE' }); say('已删除', true); await loadUpstreams(); }
+      catch (e) { say(e.message); }
+    };
+    tb.appendChild(tr);
+  }
+}
+
+$('btnAddUp').onclick = async () => {
+  try {
+    await api('/v1/admin/upstreams', {
+      method: 'POST',
+      body: JSON.stringify({ name: $('upName').value.trim(), baseUrl: $('upUrl').value.trim(), apiKey: $('upKey').value.trim() }),
+    });
+    $('upName').value = $('upUrl').value = $('upKey').value = '';
+    say('上游已添加', true);
+    await loadUpstreams();
+  } catch (e) { say(e.message); }
+};
 
 async function loadPlans() {
   const { plans } = await api('/v1/admin/plans');
@@ -196,15 +254,21 @@ async function loadPrices() {
   for (const p of prices) {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${p.Capability}</td>
-      <td><input type="number" value="${p.Credits}" data-k="credits"></td>
+      <td><input type="number" value="${p.Credits}" data-k="credits" style="width:65px"></td>
+      <td><input value="${p.Model}" data-k="model" style="width:130px"></td>
+      <td><input type="number" step="0.1" value="${p.Temperature}" data-k="temperature" style="width:55px"></td>
+      <td><input type="number" value="${p.MaxTokens}" data-k="maxTokens" style="width:75px"></td>
       <td><input type="checkbox" ${p.Enabled ? 'checked' : ''} data-k="enabled"></td>
       <td><button>保存</button></td>`;
     tr.querySelector('button').onclick = async () => {
       const body = {
         credits: +tr.querySelector('[data-k=credits]').value,
+        model: tr.querySelector('[data-k=model]').value,
+        temperature: +tr.querySelector('[data-k=temperature]').value,
+        maxTokens: +tr.querySelector('[data-k=maxTokens]').value,
         enabled: tr.querySelector('[data-k=enabled]').checked,
       };
-      try { await api('/v1/admin/capability-prices/' + p.Capability, { method: 'PUT', body: JSON.stringify(body) }); say('单价已保存', true); }
+      try { await api('/v1/admin/capability-prices/' + p.Capability, { method: 'PUT', body: JSON.stringify(body) }); say('能力配置已保存', true); }
       catch (e) { say(e.message); }
     };
     tb.appendChild(tr);

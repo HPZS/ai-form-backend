@@ -3,12 +3,13 @@ package ai
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
-	"github.com/HPZS/ai-form-backend/config"
+	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
 func chatOK(content string) http.HandlerFunc {
@@ -30,20 +31,26 @@ func jsonQuote(s string) string {
 	return string(append(b, '"'))
 }
 
-func testAIConfig(cap string, servers ...*httptest.Server) *config.AIConfig {
-	ups := map[string]*config.AIUpstream{}
-	cands := []config.AICandidate{}
+// setupCaller 建内存库,注册能力 test_cap 与按序上游(a、b、…指向给定的 httptest 服务)。
+func setupCaller(t *testing.T, servers ...*httptest.Server) *Caller {
+	t.Helper()
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.CapabilityPrice{
+		Capability: "test_cap", Model: "m", MaxTokens: 100, Enabled: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	for i, s := range servers {
-		name := string(rune('a' + i))
-		u := &config.AIUpstream{BaseURL: s.URL}
-		u.SetAPIKey("test")
-		ups[name] = u
-		cands = append(cands, config.AICandidate{Upstream: name, Model: "m"})
+		if err := db.Create(&model.AIUpstream{
+			Name: fmt.Sprintf("%c", 'a'+i), BaseURL: s.URL, APIKey: "k", Enabled: true, SortOrder: i,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
-	return &config.AIConfig{
-		Upstreams:    ups,
-		Capabilities: map[string]config.AICapability{cap: {Candidates: cands, MaxTokens: 100}},
-	}
+	return NewCaller(db)
 }
 
 // 首选挂掉 → 自动走次选
@@ -60,7 +67,7 @@ func TestFailover(t *testing.T) {
 	}))
 	defer good.Close()
 
-	caller := NewCaller(testAIConfig("test_cap", bad, good))
+	caller := setupCaller(t, bad, good)
 	res, err := caller.Call(context.Background(), "test_cap", []ChatMessage{{Role: "user", Content: "hi"}})
 	if err != nil {
 		t.Fatalf("应切换到次选成功: %v", err)
@@ -84,7 +91,7 @@ func TestCooldown(t *testing.T) {
 	good := httptest.NewServer(chatOK("ok"))
 	defer good.Close()
 
-	caller := NewCaller(testAIConfig("test_cap", bad, good))
+	caller := setupCaller(t, bad, good)
 	for i := 0; i < 5; i++ {
 		if _, err := caller.Call(context.Background(), "test_cap", nil); err != nil {
 			t.Fatalf("第 %d 次调用失败: %v", i+1, err)
@@ -96,14 +103,18 @@ func TestCooldown(t *testing.T) {
 	}
 }
 
-// 全部上游都挂 → ErrAllUpstreamsDown
-func TestAllDown(t *testing.T) {
+// 全部上游都挂 → 错误;没有启用上游 → 明确报错
+func TestAllDownAndNoUpstream(t *testing.T) {
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(502)
 	}))
 	defer bad.Close()
-	caller := NewCaller(testAIConfig("test_cap", bad))
+	caller := setupCaller(t, bad)
 	if _, err := caller.Call(context.Background(), "test_cap", nil); err == nil {
-		t.Fatal("应返回错误")
+		t.Fatal("全挂应返回错误")
+	}
+	empty := setupCaller(t) // 无上游
+	if _, err := empty.Call(context.Background(), "test_cap", nil); err == nil {
+		t.Fatal("无上游应返回错误")
 	}
 }
