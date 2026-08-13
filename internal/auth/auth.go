@@ -345,6 +345,64 @@ func (s *Service) Logout(refreshToken string) error {
 		Update("revoked_at", time.Now()).Error
 }
 
+// ===== SSO 一次性登录码(插件 → 网页控制台共用登录态) =====
+
+const ssoCodeTTL = 60 * time.Second
+
+// IssueSsoCode 为已登录用户签发一次性登录码。
+func (s *Service) IssueSsoCode(userID int64) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	code := hex.EncodeToString(raw)
+	rec := model.SsoCode{
+		UserID:    userID,
+		CodeHash:  s.hmacHex(code),
+		ExpiresAt: time.Now().Add(ssoCodeTTL),
+		CreatedAt: time.Now(),
+	}
+	if err := s.db.Create(&rec).Error; err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+// ExchangeSsoCode 用一次性码换取新会话(新 family)。原子消费,过期/已用/不存在统一报错。
+func (s *Service) ExchangeSsoCode(code string) (*model.User, *TokenPair, error) {
+	now := time.Now()
+	var rec model.SsoCode
+	err := s.db.Where("code_hash = ? AND used_at IS NULL AND expires_at > ?", s.hmacHex(code), now).
+		First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, ErrTokenInvalid
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	r := s.db.Model(&model.SsoCode{}).
+		Where("id = ? AND used_at IS NULL", rec.ID).
+		Update("used_at", now)
+	if r.Error != nil {
+		return nil, nil, r.Error
+	}
+	if r.RowsAffected == 0 {
+		return nil, nil, ErrTokenInvalid // 并发消费,只认第一个
+	}
+	var user model.User
+	if err := s.db.First(&user, rec.UserID).Error; err != nil {
+		return nil, nil, err
+	}
+	if user.Status != "active" {
+		return nil, nil, ErrUserBanned
+	}
+	pair, err := s.issueTokens(user.ID, uuid.NewString())
+	if err != nil {
+		return nil, nil, err
+	}
+	return &user, pair, nil
+}
+
 // VerifyAccess 校验 access token,返回 userID。
 func (s *Service) VerifyAccess(tokenString string) (int64, error) {
 	tok, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {

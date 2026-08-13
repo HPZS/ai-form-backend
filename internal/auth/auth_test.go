@@ -127,6 +127,34 @@ func TestPasswordLogin(t *testing.T) {
 	}
 }
 
+func TestSsoCode(t *testing.T) {
+	svc, _ := setup(t)
+	code, _ := svc.IssueCode("a@b.com")
+	user, _, err := svc.Login("a@b.com", code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sso, err := svc.IssueSsoCode(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u2, pair, err := svc.ExchangeSsoCode(sso)
+	if err != nil || u2.ID != user.ID || pair.AccessToken == "" {
+		t.Fatalf("SSO 换取失败: %v", err)
+	}
+	// 单次使用:二次兑换失败
+	if _, _, err := svc.ExchangeSsoCode(sso); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("SSO 码应单次使用,实际 %v", err)
+	}
+	// 过期码失败
+	sso2, _ := svc.IssueSsoCode(user.ID)
+	svc.db.Model(&model.SsoCode{}).Where("used_at IS NULL").
+		Update("expires_at", time.Now().Add(-time.Second))
+	if _, _, err := svc.ExchangeSsoCode(sso2); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("过期 SSO 码应失败,实际 %v", err)
+	}
+}
+
 func TestRefreshRotationAndLeakDetection(t *testing.T) {
 	svc, db := setup(t)
 	code, _ := svc.IssueCode("a@b.com")

@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Spin } from '@douyinfe/semi-ui';
 import { get, hasTokens } from './api.js';
 import Login from './pages/Login.jsx';
+import Sso from './pages/Sso.jsx';
 import ConsoleLayout from './components/Layout.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import TopUp from './pages/TopUp.jsx';
@@ -36,6 +37,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/sso" element={<Sso />} />
         <Route path="/" element={<Protected><ConsoleLayout /></Protected>}>
           <Route index element={<Dashboard />} />
           <Route path="topup" element={<TopUp />} />

@@ -89,6 +89,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			a.POST("/login-password", s.loginPassword)
 			a.POST("/refresh", s.refresh)
 			a.POST("/logout", s.logout)
+			a.POST("/sso-exchange", s.ssoExchange)
 		}
 
 		// 支付回调无需登录态
@@ -99,6 +100,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 		{
 			u.GET("/me", s.me)
 			u.POST("/auth/set-password", s.setPassword)
+			u.POST("/auth/sso-code", s.ssoCode)
 			u.GET("/credits/ledger", s.ledger)
 			u.POST("/credits/estimate", s.estimate)
 			u.POST("/credits/holds", s.createHold)
@@ -316,6 +318,51 @@ func (s *Server) setPassword(c *gin.Context) {
 		return
 	}
 	c.Status(204)
+}
+
+// ssoCode 已登录端(插件)签发一次性登录码,用于打开网页控制台免登录。
+func (s *Server) ssoCode(c *gin.Context) {
+	userID := c.GetInt64("userID")
+	if !s.limiter.Allow("sso:"+c.GetString("email"), 20, time.Hour) {
+		c.JSON(429, gin.H{"error": "RATE_LIMITED"})
+		return
+	}
+	code, err := s.auth.IssueSsoCode(userID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	c.JSON(200, gin.H{"code": code, "expiresIn": 60, "consoleUrl": s.cfg.ConsoleAddr})
+}
+
+type ssoExchangeReq struct {
+	Code string `json:"code"`
+}
+
+func (s *Server) ssoExchange(c *gin.Context) {
+	var req ssoExchangeReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Code == "" {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	if !s.limiter.Allow("sso-ex-ip:"+c.ClientIP(), 30, time.Hour) {
+		c.JSON(429, gin.H{"error": "RATE_LIMITED"})
+		return
+	}
+	user, pair, err := s.auth.ExchangeSsoCode(req.Code)
+	if err != nil {
+		if errors.Is(err, auth.ErrUserBanned) {
+			c.JSON(403, gin.H{"error": "BANNED"})
+			return
+		}
+		c.JSON(401, gin.H{"error": "SSO_CODE_INVALID", "message": "登录码无效或已过期"})
+		return
+	}
+	c.JSON(200, gin.H{
+		"user":         gin.H{"email": user.Email, "role": user.Role},
+		"accessToken":  pair.AccessToken,
+		"refreshToken": pair.RefreshToken,
+	})
 }
 
 type refreshReq struct {

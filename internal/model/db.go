@@ -43,7 +43,7 @@ func OpenMemory() (*gorm.DB, error) {
 
 func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
-		&User{}, &EmailCode{}, &RefreshToken{},
+		&User{}, &EmailCode{}, &RefreshToken{}, &SsoCode{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
 		&CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
 		&AIRequest{}, &TaskMetric{},

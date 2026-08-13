@@ -29,6 +29,17 @@ type EmailCode struct {
 	CreatedAt time.Time
 }
 
+// SsoCode 一次性登录码:插件已登录 → 换码打开网页控制台免登录。
+// 60 秒有效、单次使用、HMAC(pepper) 存储;经 URL fragment 传递不进服务端日志。
+type SsoCode struct {
+	ID        int64  `gorm:"primaryKey"`
+	UserID    int64  `gorm:"index;not null"`
+	CodeHash  string `gorm:"uniqueIndex;size:64;not null"`
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	CreatedAt time.Time
+}
+
 // RefreshToken 旋转制:旧记录不删,revoked_at + replaced_by 留作泄露检测。
 type RefreshToken struct {
 	ID         string `gorm:"primaryKey;size:36"`
