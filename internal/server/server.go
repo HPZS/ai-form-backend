@@ -3,6 +3,7 @@
 package server
 
 import (
+	_ "embed"
 	"errors"
 	"log"
 	"net/mail"
@@ -25,6 +26,9 @@ import (
 )
 
 const sourceRepo = "https://github.com/HPZS/ai-form-backend"
+
+//go:embed adminpage.html
+var adminPageHTML []byte
 
 type Server struct {
 	db      *gorm.DB
@@ -49,6 +53,12 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
 		log.Fatalf("TrustedProxies 配置错误: %v", err)
 	}
+
+	// 极简管理台单页(登录鉴权在页面内走 /v1 接口,页面本身公开)
+	r.GET("/admin", func(c *gin.Context) {
+		c.Data(200, "text/html; charset=utf-8", adminPageHTML)
+	})
+	r.GET("/", func(c *gin.Context) { c.Redirect(302, "/admin") })
 
 	v1 := r.Group("/v1")
 	{
