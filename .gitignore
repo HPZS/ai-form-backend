@@ -15,6 +15,9 @@
 *.sqlite
 /logs/
 
+# 前端(dist 随仓库提交以便 go:embed 直接构建)
+web/node_modules/
+
 # IDE
 .idea/
 .vscode/

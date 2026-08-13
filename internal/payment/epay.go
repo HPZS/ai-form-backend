@@ -154,11 +154,11 @@ func (h *Handler) Notify(c *gin.Context) {
 	c.String(200, "fail")
 }
 
-// Return 支付完成浏览器跳回。
+// Return 支付完成浏览器跳回控制台购买页。
 func (h *Handler) Return(c *gin.Context) {
 	if h.verifyAndComplete(c) {
-		c.Redirect(http.StatusFound, h.consoleAddr+"/?pay=success")
+		c.Redirect(http.StatusFound, h.consoleAddr+"/topup?pay=success")
 		return
 	}
-	c.Redirect(http.StatusFound, h.consoleAddr+"/?pay=fail")
+	c.Redirect(http.StatusFound, h.consoleAddr+"/topup?pay=fail")
 }

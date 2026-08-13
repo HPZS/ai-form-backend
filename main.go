@@ -2,6 +2,8 @@
 package main
 
 import (
+	"embed"
+	"io/fs"
 	"log"
 	"time"
 
@@ -16,6 +18,11 @@ import (
 	"github.com/HPZS/ai-form-backend/internal/server"
 	"github.com/HPZS/ai-form-backend/internal/subscription"
 )
+
+// 前端控制台构建产物(cd web && npm run build 生成,已随仓库提交)
+//
+//go:embed all:web/dist
+var webFS embed.FS
 
 func main() {
 	_ = godotenv.Load() // .env 不存在时忽略,环境变量优先
@@ -66,7 +73,11 @@ func main() {
 		}
 	}()
 
-	engine := server.New(db, cfg, authSvc, mailer, gateway)
+	webDist, err := fs.Sub(webFS, "web/dist")
+	if err != nil {
+		log.Fatalf("前端资源缺失: %v", err)
+	}
+	engine := server.New(db, cfg, authSvc, mailer, gateway, webDist)
 	log.Printf("ai-form-backend 启动于 %s (源码: https://github.com/HPZS/ai-form-backend, AGPL-3.0)", cfg.ListenAddr)
 	if err := engine.Run(cfg.ListenAddr); err != nil {
 		log.Fatalf("服务退出: %v", err)

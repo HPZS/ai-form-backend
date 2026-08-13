@@ -3,9 +3,10 @@
 package server
 
 import (
-	_ "embed"
 	"errors"
+	"io/fs"
 	"log"
+	"net/http"
 	"net/mail"
 	"strings"
 	"time"
@@ -27,9 +28,6 @@ import (
 
 const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 
-//go:embed adminpage.html
-var adminPageHTML []byte
-
 type Server struct {
 	db      *gorm.DB
 	cfg     *config.Config
@@ -40,7 +38,8 @@ type Server struct {
 	limiter *ratelimit.Limiter
 }
 
-func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.Mailer, gateway *ai.Gateway) *gin.Engine {
+// New 组装路由。webDist 为前端构建产物(web/dist),经 SPA 回退托管;nil 则不挂前端。
+func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.Mailer, gateway *ai.Gateway, webDist fs.FS) *gin.Engine {
 	s := &Server{
 		db: db, cfg: cfg, auth: authSvc, mailer: mailer, gateway: gateway,
 		pay:     payment.New(db, cfg.Epay, cfg.CallbackAddr, cfg.ConsoleAddr),
@@ -54,11 +53,30 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 		log.Fatalf("TrustedProxies 配置错误: %v", err)
 	}
 
-	// 极简管理台单页(登录鉴权在页面内走 /v1 接口,页面本身公开)
-	r.GET("/admin", func(c *gin.Context) {
-		c.Data(200, "text/html; charset=utf-8", adminPageHTML)
-	})
-	r.GET("/", func(c *gin.Context) { c.Redirect(302, "/admin") })
+	// 前端控制台:静态文件 + SPA 回退(非 /v1 路径找不到文件时回 index.html)
+	if webDist != nil {
+		fileServer := http.FileServer(http.FS(webDist))
+		r.NoRoute(func(c *gin.Context) {
+			p := strings.TrimPrefix(c.Request.URL.Path, "/")
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/") {
+				c.JSON(404, gin.H{"error": "NOT_FOUND"})
+				return
+			}
+			if p != "" {
+				if f, err := webDist.Open(p); err == nil {
+					f.Close()
+					fileServer.ServeHTTP(c.Writer, c.Request)
+					return
+				}
+			}
+			index, err := fs.ReadFile(webDist, "index.html")
+			if err != nil {
+				c.String(500, "前端资源缺失,请先构建 web/dist")
+				return
+			}
+			c.Data(200, "text/html; charset=utf-8", index)
+		})
+	}
 
 	v1 := r.Group("/v1")
 	{
@@ -109,6 +127,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			admin.PUT("/upstreams/:id", s.adminUpdateUpstream)
 			admin.DELETE("/upstreams/:id", s.adminDeleteUpstream)
 			admin.GET("/users", s.adminListUsers)
+			admin.PUT("/users/:id", s.adminUpdateUser)
 		}
 	}
 	return r
@@ -764,6 +783,38 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"users": users})
+}
+
+type userUpdateReq struct {
+	Status string `json:"status"` // active | banned
+}
+
+// adminUpdateUser 封禁/解封;封禁同时撤销全部 refresh token(全端登出)。
+func (s *Server) adminUpdateUser(c *gin.Context) {
+	var req userUpdateReq
+	if err := c.ShouldBindJSON(&req); err != nil || (req.Status != "active" && req.Status != "banned") {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	var target model.User
+	if err := s.db.First(&target, "id = ?", c.Param("id")).Error; err != nil {
+		c.JSON(404, gin.H{"error": "USER_NOT_FOUND"})
+		return
+	}
+	if target.Role == "admin" {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "不能封禁管理员"})
+		return
+	}
+	if err := s.db.Model(&target).Update("status", req.Status).Error; err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	if req.Status == "banned" {
+		s.db.Model(&model.RefreshToken{}).
+			Where("user_id = ? AND revoked_at IS NULL", target.ID).
+			Update("revoked_at", time.Now())
+	}
+	c.Status(204)
 }
 
 // ===== about(AGPL §13 源码入口 + new-api §7 附加条款署名) =====
