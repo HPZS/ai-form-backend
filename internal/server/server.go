@@ -664,13 +664,12 @@ func (s *Server) adminGetAIDefaults(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "INTERNAL"})
 		return
 	}
-	c.JSON(200, gin.H{"model": def.Model, "temperature": def.Temperature, "maxTokens": def.MaxTokens})
+	c.JSON(200, gin.H{"model": def.Model, "maxTokens": def.MaxTokens})
 }
 
 type aiDefaultsReq struct {
-	Model       string  `json:"model"`
-	Temperature float64 `json:"temperature"`
-	MaxTokens   int     `json:"maxTokens"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"maxTokens"`
 }
 
 func (s *Server) adminUpdateAIDefaults(c *gin.Context) {
@@ -683,16 +682,12 @@ func (s *Server) adminUpdateAIDefaults(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "默认模型不能为空"})
 		return
 	}
-	if req.Temperature < 0 || req.Temperature > 2 {
-		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "温度取值 0~2"})
-		return
-	}
 	if req.MaxTokens <= 0 {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "maxTokens 必须为正"})
 		return
 	}
 	err := s.db.Model(&model.AIDefault{}).Where("id = 1").Updates(map[string]any{
-		"model": strings.TrimSpace(req.Model), "temperature": req.Temperature, "max_tokens": req.MaxTokens,
+		"model": strings.TrimSpace(req.Model), "max_tokens": req.MaxTokens,
 	}).Error
 	if err != nil {
 		c.JSON(500, gin.H{"error": "INTERNAL"})
@@ -721,18 +716,17 @@ func (s *Server) adminListPrices(c *gin.Context) {
 		out = append(out, gin.H{
 			"capability": p.Capability, "name": m.Name, "desc": m.Desc,
 			"credits": p.Credits, "enabled": p.Enabled,
-			"model": p.Model, "temperature": p.Temperature, "maxTokens": p.MaxTokens,
+			"model": p.Model, "maxTokens": p.MaxTokens,
 		})
 	}
 	c.JSON(200, gin.H{"prices": out})
 }
 
 type priceReq struct {
-	Credits     int64    `json:"credits"`
-	Enabled     bool     `json:"enabled"`
-	Model       string   `json:"model"`       // 空 = 用全局默认
-	Temperature *float64 `json:"temperature"` // null = 用全局默认
-	MaxTokens   *int     `json:"maxTokens"`   // null = 用全局默认
+	Credits   int64  `json:"credits"`
+	Enabled   bool   `json:"enabled"`
+	Model     string `json:"model"`     // 空 = 用全局默认
+	MaxTokens *int   `json:"maxTokens"` // null = 用全局默认
 }
 
 // adminUpdatePrice 整行保存;改价/改模型只影响之后的请求,在途请求与已建预占按价格快照执行。
@@ -746,10 +740,6 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "单价不能为负"})
 		return
 	}
-	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
-		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "温度取值 0~2"})
-		return
-	}
 	if req.MaxTokens != nil && *req.MaxTokens <= 0 {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "maxTokens 必须为正"})
 		return
@@ -758,7 +748,7 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 		Where("capability = ?", c.Param("capability")).
 		Updates(map[string]any{
 			"credits": req.Credits, "enabled": req.Enabled, "model": strings.TrimSpace(req.Model),
-			"temperature_override": req.Temperature, "max_tokens_override": req.MaxTokens,
+			"max_tokens_override": req.MaxTokens,
 		})
 	if r.Error != nil || r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "CAPABILITY_NOT_FOUND"})

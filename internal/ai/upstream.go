@@ -100,6 +100,12 @@ func (c *Caller) markOK(id int64) {
 	delete(c.breakers, id)
 }
 
+// capTemperature 各能力的采样温度:结构化输出一律 0(确定性),
+// 只有生成/润色字段内容需要一点随机性。这是提示词工程的一部分,不作为运营配置项。
+var capTemperature = map[string]float64{
+	"generate_field": 0.3,
+}
+
 // callParams 本次调用实际生效的模型参数:能力覆盖优先,未覆盖用全局默认。
 type callParams struct {
 	Model       string
@@ -109,12 +115,9 @@ type callParams struct {
 
 // resolveParams 合成生效参数;全局默认与能力覆盖都没配模型时报错(不静默降级)。
 func resolveParams(def model.AIDefault, cap model.CapabilityPrice) (callParams, error) {
-	p := callParams{Model: def.Model, Temperature: def.Temperature, MaxTokens: def.MaxTokens}
+	p := callParams{Model: def.Model, Temperature: capTemperature[cap.Capability], MaxTokens: def.MaxTokens}
 	if cap.Model != "" {
 		p.Model = cap.Model
-	}
-	if cap.Temperature != nil {
-		p.Temperature = *cap.Temperature
 	}
 	if cap.MaxTokens != nil {
 		p.MaxTokens = *cap.MaxTokens

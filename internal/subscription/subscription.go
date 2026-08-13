@@ -36,7 +36,7 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if defCount == 0 {
-		if err := db.Create(&model.AIDefault{ID: 1, Model: "", Temperature: 0, MaxTokens: 4000}).Error; err != nil {
+		if err := db.Create(&model.AIDefault{ID: 1, Model: "", MaxTokens: 4000}).Error; err != nil {
 			return fmt.Errorf("播种 AI 默认参数失败: %w", err)
 		}
 	}
@@ -45,16 +45,11 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if priceCount == 0 {
-		// 只播种单价;模型参数一律走全局默认,例外(生成字段要一点随机性)才带覆盖
+		// 只播种单价;模型参数一律走全局默认(温度由代码按能力定死,不是配置项)
 		creditsByCap := map[string]int64{"analyze_form": 5, "match_columns": 5, "generate_rule": 3, "generate_field": 1}
-		genFieldTemp := 0.3
 		var prices []model.CapabilityPrice
 		for _, m := range ai.CapabilityMetas() {
-			p := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true}
-			if m.Key == "generate_field" {
-				p.Temperature = &genFieldTemp
-			}
-			prices = append(prices, p)
+			prices = append(prices, model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true})
 		}
 		if err := db.Create(&prices).Error; err != nil {
 			return fmt.Errorf("播种能力单价失败: %w", err)

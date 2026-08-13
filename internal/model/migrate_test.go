@@ -50,7 +50,7 @@ func TestMigrateLegacyCapabilitySchema(t *testing.T) {
 		t.Fatalf("旧库迁移失败: %v", err)
 	}
 
-	for _, col := range []string{"temperature", "max_tokens"} {
+	for _, col := range []string{"temperature", "max_tokens", "temperature_override"} {
 		if db.Migrator().HasColumn(&CapabilityPrice{}, col) {
 			t.Fatalf("旧列 %s 应已删除", col)
 		}
@@ -59,7 +59,7 @@ func TestMigrateLegacyCapabilitySchema(t *testing.T) {
 	if err := db.First(&p, "capability = ?", "analyze_form").Error; err != nil {
 		t.Fatal(err)
 	}
-	if p.Model != "" || p.Temperature != nil || p.MaxTokens != nil {
+	if p.Model != "" || p.MaxTokens != nil {
 		t.Fatalf("旧占位配置应重置为用默认,实际 %+v", p)
 	}
 	if p.Credits != 5 || !p.Enabled {

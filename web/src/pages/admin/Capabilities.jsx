@@ -8,7 +8,7 @@ import { get, put } from '../../api.js';
 const numOrNull = (x) => (x === '' || x === null || x === undefined ? null : x);
 
 export default function Capabilities() {
-  const [defaults, setDefaults] = useState({ model: '', temperature: 0, maxTokens: 4000 });
+  const [defaults, setDefaults] = useState({ model: '', maxTokens: 4000 });
   const [rows, setRows] = useState([]);
   const [savingDef, setSavingDef] = useState(false);
 
@@ -39,7 +39,7 @@ export default function Capabilities() {
     try {
       await put('/v1/admin/capability-prices/' + r.capability, {
         credits: r.credits, enabled: r.enabled, model: r.model || '',
-        temperature: numOrNull(r.temperature), maxTokens: numOrNull(r.maxTokens),
+        maxTokens: numOrNull(r.maxTokens),
       });
       Toast.success(`「${r.name}」已保存(在途请求与预占按快照)`);
     } catch (e) { Toast.error(e.message); }
@@ -57,7 +57,6 @@ export default function Capabilities() {
     },
     { title: '积分/次', dataIndex: 'credits', width: 110, render: (v, r) => <InputNumber value={v} onChange={(x) => patch(r.capability, 'credits', numOrNull(x) ?? 0)} min={0} style={{ width: 90 }} /> },
     { title: '模型(留空用默认)', dataIndex: 'model', width: 190, render: (v, r) => <Input value={v} onChange={(x) => patch(r.capability, 'model', x)} placeholder={`默认:${defaults.model || '未设置'}`} style={{ width: 170 }} /> },
-    { title: '温度(留空用默认)', dataIndex: 'temperature', width: 140, render: (v, r) => <InputNumber value={v ?? ''} onChange={(x) => patch(r.capability, 'temperature', numOrNull(x))} min={0} max={2} step={0.1} placeholder={`默认:${defaults.temperature}`} style={{ width: 120 }} /> },
     { title: 'maxTokens(留空用默认)', dataIndex: 'maxTokens', width: 160, render: (v, r) => <InputNumber value={v ?? ''} onChange={(x) => patch(r.capability, 'maxTokens', numOrNull(x))} min={1} placeholder={`默认:${defaults.maxTokens}`} style={{ width: 130 }} /> },
     { title: '启用', dataIndex: 'enabled', width: 70, render: (v, r) => <Switch checked={v} onChange={(x) => patch(r.capability, 'enabled', x)} /> },
     { title: '', width: 80, render: (_, r) => <Button size="small" onClick={() => saveRow(r)}>保存</Button> },
@@ -74,10 +73,6 @@ export default function Capabilities() {
           <div>
             <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>模型</Typography.Text>
             <Input value={defaults.model} onChange={(x) => setDefaults((d) => ({ ...d, model: x }))} placeholder="上游支持的模型名,对所有上游通用" style={{ width: 240 }} />
-          </div>
-          <div>
-            <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>温度</Typography.Text>
-            <InputNumber value={defaults.temperature} onChange={(x) => setDefaults((d) => ({ ...d, temperature: numOrNull(x) ?? 0 }))} min={0} max={2} step={0.1} style={{ width: 100 }} />
           </div>
           <div>
             <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>maxTokens</Typography.Text>

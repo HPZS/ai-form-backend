@@ -105,20 +105,19 @@ func TestCooldown(t *testing.T) {
 	}
 }
 
-// 生效参数解析:能力覆盖优先,未覆盖用全局默认;两边都没模型时报错
+// 生效参数解析:能力覆盖优先,未覆盖用全局默认;温度由代码按能力定;没模型时报错
 func TestResolveParams(t *testing.T) {
-	def := model.AIDefault{Model: "base", Temperature: 0.5, MaxTokens: 4000}
+	def := model.AIDefault{Model: "base", MaxTokens: 4000}
 
-	p, err := resolveParams(def, model.CapabilityPrice{})
-	if err != nil || p.Model != "base" || p.Temperature != 0.5 || p.MaxTokens != 4000 {
-		t.Fatalf("未覆盖应全用默认,实际 %+v err=%v", p, err)
+	p, err := resolveParams(def, model.CapabilityPrice{Capability: "match_columns"})
+	if err != nil || p.Model != "base" || p.Temperature != 0 || p.MaxTokens != 4000 {
+		t.Fatalf("未覆盖应全用默认(温度 0),实际 %+v err=%v", p, err)
 	}
 
-	temp := 0.0
 	tokens := 300
-	p, err = resolveParams(def, model.CapabilityPrice{Model: "special", Temperature: &temp, MaxTokens: &tokens})
-	if err != nil || p.Model != "special" || p.Temperature != 0 || p.MaxTokens != 300 {
-		t.Fatalf("覆盖应全部生效(含温度显式 0),实际 %+v err=%v", p, err)
+	p, err = resolveParams(def, model.CapabilityPrice{Capability: "generate_field", Model: "special", MaxTokens: &tokens})
+	if err != nil || p.Model != "special" || p.Temperature != 0.3 || p.MaxTokens != 300 {
+		t.Fatalf("覆盖应生效且生成字段温度 0.3,实际 %+v err=%v", p, err)
 	}
 
 	if _, err := resolveParams(model.AIDefault{}, model.CapabilityPrice{}); err == nil {
