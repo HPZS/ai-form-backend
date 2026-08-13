@@ -1,0 +1,64 @@
+# AI 上游与能力配置示例。真实配置放 config/private/ai.yaml(不入库)。
+# upstream 的 apiKeyEnv 指向存放密钥的环境变量名。
+upstreams:
+  main:
+    baseUrl: "https://api.example.com/v1"
+    apiKeyEnv: "UPSTREAM_MAIN_KEY"
+  qwen:
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    apiKeyEnv: "UPSTREAM_QWEN_KEY"
+
+# 每个能力一条按序尝试的候选链;temperature/maxTokens 为该能力统一参数。
+capabilities:
+  assess_page:
+    candidates:
+      - { upstream: main, model: "gpt-4o-mini" }
+      - { upstream: qwen, model: "qwen-plus" }
+    temperature: 0
+    maxTokens: 2000
+  analyze_form:
+    candidates:
+      - { upstream: main, model: "gpt-4o-mini" }
+      - { upstream: qwen, model: "qwen-plus" }
+    temperature: 0
+    maxTokens: 2000
+  pick_open_button:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 500
+  pick_form:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 500
+  match_columns:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 2000
+  suggest_profile:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 500
+  detect_grouping:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 800
+  generate_rule:
+    candidates: [{ upstream: main, model: "gpt-4o" }]
+    temperature: 0
+    maxTokens: 4000
+  generate_field:
+    candidates: [{ upstream: qwen, model: "qwen-plus" }]
+    temperature: 0.3
+    maxTokens: 1000
+  explain_failure:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 1000
+  classify_failure:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 300
+  parse_command:
+    candidates: [{ upstream: main, model: "gpt-4o-mini" }]
+    temperature: 0
+    maxTokens: 1500

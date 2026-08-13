@@ -1,0 +1,17 @@
+# 提示词示例(占位)。真实提示词是私有运行时配置,放 prompts/private/,不入仓库。
+# 每个能力一个 <capability>.yaml;system/user 是 Go text/template,
+# 可用数据: {{.Req}} 请求结构体、{{.Today}} 本地日期(YYYY-MM-DD);
+# 辅助函数: {{json v}} 紧凑序列化、{{jsonIndent v}} 带缩进序列化。
+version: v1
+system: |
+  你是浏览器表单自动填充助手。只输出 JSON,不要输出任何其他文字。
+user: |
+  ## 要录入的数据列
+  {{json .Req.Headers}}
+  ## 当前页面可见的输入字段
+  {{jsonIndent .Req.Fields}}
+  ## 页面上的按钮
+  {{jsonIndent .Req.Buttons}}
+
+  判断:这些可见字段是不是用来录入上述数据的表单?
+  输出 {"enterable":true或false,"openSelector":"打开录入表单的按钮selector;找不到为null"}

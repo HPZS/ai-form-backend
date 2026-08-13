@@ -1,0 +1,298 @@
+// ai-form-backend - AGPL-3.0
+// AI 网关流水线(技术方案 v3 §5.6/§6):
+//   严格解码 → 幂等闸门(唯一索引原子插入 pending + 90s 租约,可抢占接管)
+//   → 订阅/余额预检 → 渲染提示词 → 上游候选链调用 → 解析(失败同链重试一次)
+//   → 扣费与状态落定同事务 → 响应含 credits 并写入 24h 幂等缓存。
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/HPZS/ai-form-backend/internal/credits"
+	"github.com/HPZS/ai-form-backend/internal/model"
+)
+
+const (
+	leaseTTL     = 90 * time.Second
+	maxBodyBytes = 256 << 10
+)
+
+type Spec struct {
+	Name   string
+	NewReq func() Request
+	Post   func(req Request, content string) (any, error)
+}
+
+type Gateway struct {
+	db      *gorm.DB
+	caller  *Caller
+	prompts *PromptStore
+}
+
+func NewGateway(db *gorm.DB, caller *Caller, prompts *PromptStore) *Gateway {
+	return &Gateway{db: db, caller: caller, prompts: prompts}
+}
+
+func apiErr(c *gin.Context, status int, code, msg string) {
+	c.JSON(status, gin.H{"error": code, "message": msg})
+}
+
+// Handler 生成某能力的 gin 处理函数。
+func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		userID := c.GetInt64("userID")
+
+		// 1. 严格解码 + 校验
+		req := spec.NewReq()
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
+		dec := json.NewDecoder(c.Request.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(req); err != nil {
+			apiErr(c, 400, "BAD_REQUEST", "请求体不合法: "+err.Error())
+			return
+		}
+		if err := req.Validate(); err != nil {
+			apiErr(c, 400, "BAD_REQUEST", err.Error())
+			return
+		}
+		meta := req.GetMeta()
+
+		// 2. 幂等闸门
+		now := time.Now()
+		ar := model.AIRequest{
+			UserID: userID, RequestID: meta.RequestID, TaskID: meta.TaskID,
+			BillingGroupID: meta.BillingGroupID, Capability: spec.Name,
+			Status: model.AIReqPending, LeaseExpiresAt: now.Add(leaseTTL), CreatedAt: now,
+		}
+		ins := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&ar)
+		if ins.Error != nil {
+			apiErr(c, 500, "INTERNAL", "内部错误")
+			return
+		}
+		if ins.RowsAffected == 0 {
+			var existing model.AIRequest
+			if err := g.db.Where("user_id = ? AND request_id = ?", userID, meta.RequestID).
+				First(&existing).Error; err != nil {
+				apiErr(c, 500, "INTERNAL", "内部错误")
+				return
+			}
+			switch existing.Status {
+			case model.AIReqOK:
+				if existing.ResponseCache != "" {
+					c.Data(200, "application/json; charset=utf-8", []byte(existing.ResponseCache))
+					return
+				}
+				apiErr(c, 410, "IDEMPOTENCY_RESULT_EXPIRED", "结果缓存已过期,请用新 requestId 重新发起")
+				return
+			case model.AIReqPending:
+				if now.Before(existing.LeaseExpiresAt) {
+					c.Header("Retry-After", "3")
+					apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
+					return
+				}
+				// 租约过期:原子抢占接管
+				r := g.db.Model(&model.AIRequest{}).
+					Where("id = ? AND status = ? AND lease_expires_at < ?", existing.ID, model.AIReqPending, now).
+					Update("lease_expires_at", now.Add(leaseTTL))
+				if r.Error != nil || r.RowsAffected == 0 {
+					c.Header("Retry-After", "3")
+					apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
+					return
+				}
+				ar = existing
+			default: // ai_invalid / upstream_error:未扣费,允许原地重跑
+				r := g.db.Model(&model.AIRequest{}).
+					Where("id = ? AND status = ?", existing.ID, existing.Status).
+					Updates(map[string]any{"status": model.AIReqPending, "lease_expires_at": now.Add(leaseTTL)})
+				if r.Error != nil || r.RowsAffected == 0 {
+					c.Header("Retry-After", "3")
+					apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
+					return
+				}
+				ar = existing
+			}
+		}
+
+		// 3. 订阅与余额预检(减少白付模型成本;最终扣费在同事务内仍会复核)
+		price, err := g.capabilityPrice(spec.Name)
+		if err != nil {
+			apiErr(c, 500, "INTERNAL", "内部错误")
+			return
+		}
+		hasSub, err := hasActiveSubscription(g.db, userID)
+		if err != nil {
+			apiErr(c, 500, "INTERNAL", "内部错误")
+			return
+		}
+		if !hasSub {
+			g.releaseLease(ar.ID)
+			apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
+			return
+		}
+		if price > 0 {
+			avail, err := credits.Available(g.db, userID)
+			if err != nil {
+				apiErr(c, 500, "INTERNAL", "内部错误")
+				return
+			}
+			if avail < price {
+				g.releaseLease(ar.ID)
+				c.JSON(402, gin.H{"error": "INSUFFICIENT_CREDITS", "available": avail, "required": price})
+				return
+			}
+		}
+
+		// 4. 渲染提示词并调用上游(解析失败同链重试一次)
+		system, user, promptVer, err := g.prompts.Render(spec.Name, req)
+		if err != nil {
+			apiErr(c, 500, "INTERNAL", "提示词配置错误")
+			return
+		}
+		messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
+		ctx := context.Background()
+
+		var result any
+		var call *CallResult
+		for attempt := 0; attempt < 2; attempt++ {
+			call, err = g.caller.Call(ctx, spec.Name, messages)
+			if err != nil {
+				g.finishFailed(ar.ID, model.AIReqUpstreamError, call, promptVer, start)
+				apiErr(c, 503, "AI_UNAVAILABLE", "AI 服务暂时不可用,请稍后重试")
+				return
+			}
+			result, err = spec.Post(req, call.Content)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			g.finishFailed(ar.ID, model.AIReqInvalid, call, promptVer, start)
+			apiErr(c, 422, "AI_OUTPUT_INVALID", "AI 输出不符合预期,本次不扣积分")
+			return
+		}
+
+		// 5. 扣费与状态落定(同事务)
+		var chargeRes credits.ChargeResult
+		txErr := g.db.Transaction(func(tx *gorm.DB) error {
+			var cerr error
+			chargeRes, cerr = credits.Charge(tx, credits.ChargeArgs{
+				UserID: userID, RequestID: meta.RequestID, TaskID: meta.TaskID,
+				BillingGroupID: meta.BillingGroupID, Capability: spec.Name, Price: price,
+			})
+			if cerr != nil {
+				return cerr
+			}
+			body, merr := mergeCredits(result, chargeRes)
+			if merr != nil {
+				return merr
+			}
+			return tx.Model(&model.AIRequest{}).Where("id = ?", ar.ID).Updates(map[string]any{
+				"status": model.AIReqOK, "upstream": call.Upstream, "model": call.Model,
+				"prompt_version": promptVer, "schema_version": "v1",
+				"input_tokens": call.InputTokens, "output_tokens": call.OutputTokens,
+				"credits": chargeRes.Charged, "latency_ms": int(time.Since(start).Milliseconds()),
+				"response_cache": string(body),
+			}).Error
+		})
+		if txErr != nil {
+			if errors.Is(txErr, credits.ErrInsufficient) {
+				g.releaseLease(ar.ID) // 未扣费,购买后可原 requestId 重试(会重调模型)
+				avail, _ := credits.Available(g.db, userID)
+				c.JSON(402, gin.H{"error": "INSUFFICIENT_CREDITS", "available": avail, "required": price})
+				return
+			}
+			if errors.Is(txErr, credits.ErrNoActiveSub) {
+				g.releaseLease(ar.ID)
+				apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
+				return
+			}
+			apiErr(c, 500, "INTERNAL", "内部错误")
+			return
+		}
+		body, _ := mergeCredits(result, chargeRes)
+		c.Data(200, "application/json; charset=utf-8", body)
+	}
+}
+
+// releaseLease 把 pending 租约立即置为过期,让后续同 requestId 请求可接管重跑。
+func (g *Gateway) releaseLease(id int64) {
+	g.db.Model(&model.AIRequest{}).Where("id = ?", id).
+		Update("lease_expires_at", time.Now().Add(-time.Second))
+}
+
+func (g *Gateway) finishFailed(id int64, status string, call *CallResult, promptVer string, start time.Time) {
+	fields := map[string]any{
+		"status": status, "prompt_version": promptVer,
+		"latency_ms": int(time.Since(start).Milliseconds()),
+	}
+	if call != nil {
+		fields["upstream"] = call.Upstream
+		fields["model"] = call.Model
+		fields["input_tokens"] = call.InputTokens
+		fields["output_tokens"] = call.OutputTokens
+	}
+	g.db.Model(&model.AIRequest{}).Where("id = ?", id).Updates(fields)
+}
+
+func (g *Gateway) capabilityPrice(capability string) (int64, error) {
+	var p model.CapabilityPrice
+	err := g.db.Where("capability = ?", capability).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !p.Enabled {
+		return 0, fmt.Errorf("能力已停用")
+	}
+	return p.Credits, nil
+}
+
+func hasActiveSubscription(db *gorm.DB, userID int64) (bool, error) {
+	var cnt int64
+	err := db.Model(&model.UserSubscription{}).
+		Where("user_id = ? AND status = ? AND ends_at > ?", userID, model.SubStatusActive, time.Now()).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
+// mergeCredits 把业务结果与 credits 信息合并为一个顶层 JSON 对象。
+func mergeCredits(result any, cr credits.ChargeResult) ([]byte, error) {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	m["credits"] = map[string]any{"charged": cr.Charged, "available": cr.Available}
+	return json.Marshal(m)
+}
+
+// CleanExpiredCaches 定时任务:清除超过 24 小时的幂等缓存(隐私要求)。
+func CleanExpiredCaches(db *gorm.DB) (int64, error) {
+	r := db.Model(&model.AIRequest{}).
+		Where("status = ? AND created_at < ? AND response_cache <> ''", model.AIReqOK, time.Now().Add(-24*time.Hour)).
+		Update("response_cache", "")
+	return r.RowsAffected, r.Error
+}
+
+// strPtrOrNil 空串转 null 输出。
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
