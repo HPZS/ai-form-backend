@@ -118,6 +118,9 @@ type AIDefault struct {
 	UpdatedAt time.Time
 }
 
+// TableName 显式指定:GORM 会把 AIDefault 蛇形化成 a_idefaults(与 ai_requests/ai_upstreams 不一致)。
+func (AIDefault) TableName() string { return "ai_defaults" }
+
 // CapabilityPrice 能力配置:计费单价 + 可选的模型覆盖,管理台可改、即时生效。
 // Model 为空时用 AIDefault 的全局默认。
 type CapabilityPrice struct {

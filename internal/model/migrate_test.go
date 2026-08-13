@@ -71,3 +71,40 @@ func TestMigrateLegacyCapabilitySchema(t *testing.T) {
 		t.Fatalf("二次迁移失败: %v", err)
 	}
 }
+
+// 默认模型表曾被 GORM 蛇形化成 a_idefaults:迁移应改名为 ai_defaults 且数据保留。
+func TestMigrateRenamesAIDefaultsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rename.db")
+	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, e := db.DB(); e == nil {
+			sqlDB.Close()
+		}
+	})
+	for _, sql := range []string{
+		`CREATE TABLE a_idefaults (id INTEGER PRIMARY KEY, model TEXT NOT NULL DEFAULT '', updated_at DATETIME)`,
+		`INSERT INTO a_idefaults (id, model) VALUES (1, 'my-model')`,
+	} {
+		if err := db.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+
+	if db.Migrator().HasTable("a_idefaults") {
+		t.Fatal("旧表 a_idefaults 应已改名")
+	}
+	var def AIDefault
+	if err := db.First(&def, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if def.Model != "my-model" {
+		t.Fatalf("改名后数据应保留,实际 %+v", def)
+	}
+}

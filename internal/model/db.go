@@ -46,6 +46,12 @@ func Migrate(db *gorm.DB) error {
 	// 新版改为"全局默认 + 可空覆盖"。旧列存在说明库是老结构,迁移后要清掉播种的占位模型名。
 	legacyCapSchema := db.Migrator().HasTable(&CapabilityPrice{}) &&
 		db.Migrator().HasColumn(&CapabilityPrice{}, "temperature")
+	// 默认模型表曾被 GORM 蛇形化成 a_idefaults:先改名保数据,再走常规迁移
+	if db.Migrator().HasTable("a_idefaults") && !db.Migrator().HasTable("ai_defaults") {
+		if err := db.Migrator().RenameTable("a_idefaults", "ai_defaults"); err != nil {
+			return fmt.Errorf("重命名 a_idefaults 失败: %w", err)
+		}
+	}
 	if err := db.AutoMigrate(
 		&User{}, &EmailCode{}, &RefreshToken{}, &SsoCode{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
