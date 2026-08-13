@@ -17,6 +17,9 @@ services:
       - app
 
   app:
+    # 服务器直接拉现成镜像(开发机 docker compose build && docker compose push 发布);
+    # 本地想从源码跑,用 docker compose up -d --build 即可覆盖
+    image: hupeng666/form-backend:latest
     build: .
     restart: unless-stopped
     env_file: .env
