@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/HPZS/ai-form-backend/internal/ai"
 	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
@@ -29,26 +30,31 @@ func SeedDefaults(db *gorm.DB) error {
 			return fmt.Errorf("播种套餐失败: %w", err)
 		}
 	}
+	// 全局 AI 默认参数(单行):模型名必须由管理员在管理台设置,不播种任何厂商占位值
+	var defCount int64
+	if err := db.Model(&model.AIDefault{}).Count(&defCount).Error; err != nil {
+		return err
+	}
+	if defCount == 0 {
+		if err := db.Create(&model.AIDefault{ID: 1, Model: "", Temperature: 0, MaxTokens: 4000}).Error; err != nil {
+			return fmt.Errorf("播种 AI 默认参数失败: %w", err)
+		}
+	}
 	var priceCount int64
 	if err := db.Model(&model.CapabilityPrice{}).Count(&priceCount).Error; err != nil {
 		return err
 	}
 	if priceCount == 0 {
-		// 模型名是占位默认值(所有上游统一 OpenAI 格式,模型名跨上游通用),管理台可改
-		const m = "gpt-4o-mini"
-		prices := []model.CapabilityPrice{
-			{Capability: "assess_page", Credits: 0, Enabled: true, Model: m, MaxTokens: 2000},
-			{Capability: "analyze_form", Credits: 5, Enabled: true, Model: m, MaxTokens: 2000},
-			{Capability: "pick_open_button", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
-			{Capability: "pick_form", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
-			{Capability: "match_columns", Credits: 5, Enabled: true, Model: m, MaxTokens: 2000},
-			{Capability: "suggest_profile", Credits: 0, Enabled: true, Model: m, MaxTokens: 500},
-			{Capability: "detect_grouping", Credits: 0, Enabled: true, Model: m, MaxTokens: 800},
-			{Capability: "generate_rule", Credits: 3, Enabled: true, Model: m, MaxTokens: 4000},
-			{Capability: "generate_field", Credits: 1, Enabled: true, Model: m, Temperature: 0.3, MaxTokens: 1000},
-			{Capability: "explain_failure", Credits: 0, Enabled: true, Model: m, MaxTokens: 1000},
-			{Capability: "classify_failure", Credits: 0, Enabled: true, Model: m, MaxTokens: 300},
-			{Capability: "parse_command", Credits: 0, Enabled: true, Model: m, MaxTokens: 1500},
+		// 只播种单价;模型参数一律走全局默认,例外(生成字段要一点随机性)才带覆盖
+		creditsByCap := map[string]int64{"analyze_form": 5, "match_columns": 5, "generate_rule": 3, "generate_field": 1}
+		genFieldTemp := 0.3
+		var prices []model.CapabilityPrice
+		for _, m := range ai.CapabilityMetas() {
+			p := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true}
+			if m.Key == "generate_field" {
+				p.Temperature = &genFieldTemp
+			}
+			prices = append(prices, p)
 		}
 		if err := db.Create(&prices).Error; err != nil {
 			return fmt.Errorf("播种能力单价失败: %w", err)

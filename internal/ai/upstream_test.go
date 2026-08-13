@@ -38,9 +38,11 @@ func setupCaller(t *testing.T, servers ...*httptest.Server) *Caller {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&model.CapabilityPrice{
-		Capability: "test_cap", Model: "m", MaxTokens: 100, Enabled: true,
-	}).Error; err != nil {
+	// 能力不带任何覆盖,模型参数走全局默认——同时覆盖"默认+覆盖"解析的默认分支
+	if err := db.Create(&model.AIDefault{ID: 1, Model: "m", MaxTokens: 100}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.CapabilityPrice{Capability: "test_cap", Enabled: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	for i, s := range servers {
@@ -100,6 +102,27 @@ func TestCooldown(t *testing.T) {
 	// 前 3 次每次都会先打一下坏上游,之后进入冷却被跳过
 	if badHits != 3 {
 		t.Fatalf("坏上游应只被打 3 次后冷却,实际 %d", badHits)
+	}
+}
+
+// 生效参数解析:能力覆盖优先,未覆盖用全局默认;两边都没模型时报错
+func TestResolveParams(t *testing.T) {
+	def := model.AIDefault{Model: "base", Temperature: 0.5, MaxTokens: 4000}
+
+	p, err := resolveParams(def, model.CapabilityPrice{})
+	if err != nil || p.Model != "base" || p.Temperature != 0.5 || p.MaxTokens != 4000 {
+		t.Fatalf("未覆盖应全用默认,实际 %+v err=%v", p, err)
+	}
+
+	temp := 0.0
+	tokens := 300
+	p, err = resolveParams(def, model.CapabilityPrice{Model: "special", Temperature: &temp, MaxTokens: &tokens})
+	if err != nil || p.Model != "special" || p.Temperature != 0 || p.MaxTokens != 300 {
+		t.Fatalf("覆盖应全部生效(含温度显式 0),实际 %+v err=%v", p, err)
+	}
+
+	if _, err := resolveParams(model.AIDefault{}, model.CapabilityPrice{}); err == nil {
+		t.Fatal("默认与覆盖都没配模型应报错")
 	}
 }
 

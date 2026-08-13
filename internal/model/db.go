@@ -42,13 +42,30 @@ func OpenMemory() (*gorm.DB, error) {
 }
 
 func Migrate(db *gorm.DB) error {
+	// 结构升级前置判断:旧版能力表直接带 temperature/max_tokens 列(必配),
+	// 新版改为"全局默认 + 可空覆盖"。旧列存在说明库是老结构,迁移后要清掉播种的占位模型名。
+	legacyCapSchema := db.Migrator().HasTable(&CapabilityPrice{}) &&
+		db.Migrator().HasColumn(&CapabilityPrice{}, "temperature")
 	if err := db.AutoMigrate(
 		&User{}, &EmailCode{}, &RefreshToken{}, &SsoCode{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
-		&CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
+		&AIDefault{}, &CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
 		&AIRequest{}, &TaskMetric{},
 	); err != nil {
 		return fmt.Errorf("迁移失败: %w", err)
+	}
+	if legacyCapSchema {
+		// 旧配置全是播种占位值(非管理员手配),重置为"用全局默认",再删除废弃列
+		if err := db.Model(&CapabilityPrice{}).Where("1 = 1").Update("model", "").Error; err != nil {
+			return fmt.Errorf("清理旧能力配置失败: %w", err)
+		}
+		for _, col := range []string{"temperature", "max_tokens"} {
+			if db.Migrator().HasColumn(&CapabilityPrice{}, col) {
+				if err := db.Migrator().DropColumn(&CapabilityPrice{}, col); err != nil {
+					return fmt.Errorf("删除旧列 %s 失败: %w", col, err)
+				}
+			}
+		}
 	}
 	// 部分唯一索引(postgres 与 sqlite 语法一致):
 	// 1. 幂等闸门:同用户同 requestId 只允许一行

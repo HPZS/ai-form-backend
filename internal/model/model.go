@@ -110,14 +110,24 @@ type PaymentOrder struct {
 
 // ===== 积分(自建) =====
 
-// CapabilityPrice 能力配置:计费单价 + 模型参数,管理台可改、即时生效。
-type CapabilityPrice struct {
-	Capability  string  `gorm:"primaryKey;size:32"`
-	Credits     int64   `gorm:"not null"`
-	Enabled     bool    `gorm:"not null;default:true"`
+// AIDefault 全局 AI 默认参数(单行,ID 恒为 1):能力未单独覆盖时统一用这里的值。
+type AIDefault struct {
+	ID          int64   `gorm:"primaryKey"`
 	Model       string  `gorm:"size:64;not null;default:''"` // 所有上游统一 OpenAI 格式,模型名跨上游通用
 	Temperature float64 `gorm:"not null;default:0"`
-	MaxTokens   int     `gorm:"not null;default:2000"`
+	MaxTokens   int     `gorm:"not null;default:4000"`
+	UpdatedAt   time.Time
+}
+
+// CapabilityPrice 能力配置:计费单价 + 可选的模型参数覆盖,管理台可改、即时生效。
+// Model 为空、Temperature/MaxTokens 为 NULL 时用 AIDefault 的全局默认。
+type CapabilityPrice struct {
+	Capability  string   `gorm:"primaryKey;size:32"`
+	Credits     int64    `gorm:"not null"`
+	Enabled     bool     `gorm:"not null;default:true"`
+	Model       string   `gorm:"size:64;not null;default:''"`
+	Temperature *float64 `gorm:"column:temperature_override"`
+	MaxTokens   *int     `gorm:"column:max_tokens_override"`
 	UpdatedAt   time.Time
 }
 

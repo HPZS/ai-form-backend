@@ -39,7 +39,7 @@ export default function ConsoleLayout() {
     '/topup': ['购买套餐', '选择适合你的积分套餐'],
     '/ledger': ['积分流水', '查看积分充值与消费明细'],
     '/admin/plans': ['套餐管理', '管理套餐价格、额度与销售状态'],
-    '/admin/capabilities': ['能力配置', '配置各项 AI 能力的计费与模型参数'],
+    '/admin/capabilities': ['能力配置', '默认参数统一设置,单个能力按需覆盖计费与模型'],
     '/admin/upstreams': ['AI 上游', '管理 OpenAI 兼容端点与故障切换顺序'],
     '/admin/users': ['用户管理', '查看用户并管理账号状态'],
   }[location.pathname] || ['控制台', 'AI 智能录入助手'];

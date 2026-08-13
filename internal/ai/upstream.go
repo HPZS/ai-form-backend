@@ -100,14 +100,44 @@ func (c *Caller) markOK(id int64) {
 	delete(c.breakers, id)
 }
 
+// callParams 本次调用实际生效的模型参数:能力覆盖优先,未覆盖用全局默认。
+type callParams struct {
+	Model       string
+	Temperature float64
+	MaxTokens   int
+}
+
+// resolveParams 合成生效参数;全局默认与能力覆盖都没配模型时报错(不静默降级)。
+func resolveParams(def model.AIDefault, cap model.CapabilityPrice) (callParams, error) {
+	p := callParams{Model: def.Model, Temperature: def.Temperature, MaxTokens: def.MaxTokens}
+	if cap.Model != "" {
+		p.Model = cap.Model
+	}
+	if cap.Temperature != nil {
+		p.Temperature = *cap.Temperature
+	}
+	if cap.MaxTokens != nil {
+		p.MaxTokens = *cap.MaxTokens
+	}
+	if p.Model == "" {
+		return p, fmt.Errorf("未配置默认模型,请在管理台「能力配置」设置")
+	}
+	return p, nil
+}
+
 // Call 按启用上游的优先级顺序尝试,自动故障切换。
 func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMessage) (*CallResult, error) {
 	var cap model.CapabilityPrice
 	if err := c.db.Where("capability = ?", capability).First(&cap).Error; err != nil {
 		return nil, fmt.Errorf("能力 %s 未配置", capability)
 	}
-	if cap.Model == "" {
-		return nil, fmt.Errorf("能力 %s 未配置模型,请在管理台设置", capability)
+	var def model.AIDefault
+	if err := c.db.First(&def, 1).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	params, err := resolveParams(def, cap)
+	if err != nil {
+		return nil, err
 	}
 	var ups []model.AIUpstream
 	if err := c.db.Where("enabled = ?", true).Order("sort_order asc, id asc").Find(&ups).Error; err != nil {
@@ -121,7 +151,7 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 		if c.cooling(up.ID) {
 			continue
 		}
-		res, err := c.callOnce(ctx, up, cap, messages)
+		res, err := c.callOnce(ctx, up, params, messages)
 		if err == nil {
 			c.markOK(up.ID)
 			return res, nil
@@ -154,12 +184,12 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, cap model.CapabilityPrice, messages []ChatMessage) (*CallResult, error) {
+func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callParams, messages []ChatMessage) (*CallResult, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:       cap.Model,
+		Model:       params.Model,
 		Messages:    messages,
-		Temperature: cap.Temperature,
-		MaxTokens:   cap.MaxTokens,
+		Temperature: params.Temperature,
+		MaxTokens:   params.MaxTokens,
 	})
 	if err != nil {
 		return nil, err
@@ -194,7 +224,7 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, cap model.Ca
 	return &CallResult{
 		Content:      cr.Choices[0].Message.Content,
 		Upstream:     up.Name,
-		Model:        cap.Model,
+		Model:        params.Model,
 		InputTokens:  cr.Usage.PromptTokens,
 		OutputTokens: cr.Usage.CompletionTokens,
 	}, nil

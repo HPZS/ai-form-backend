@@ -122,6 +122,8 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			admin.GET("/plans", s.adminListPlans)
 			admin.POST("/plans", s.adminCreatePlan)
 			admin.PUT("/plans/:id", s.adminUpdatePlan)
+			admin.GET("/ai-defaults", s.adminGetAIDefaults)
+			admin.PUT("/ai-defaults", s.adminUpdateAIDefaults)
 			admin.GET("/capability-prices", s.adminListPrices)
 			admin.PUT("/capability-prices/:capability", s.adminUpdatePrice)
 			admin.GET("/upstreams", s.adminListUpstreams)
@@ -654,56 +656,110 @@ func (s *Server) adminUpdatePlan(c *gin.Context) {
 	c.Status(204)
 }
 
-func (s *Server) adminListPrices(c *gin.Context) {
-	var prices []model.CapabilityPrice
-	if err := s.db.Order("capability asc").Find(&prices).Error; err != nil {
+// ===== AI 全局默认参数(能力未覆盖时统一用这里的值) =====
+
+func (s *Server) adminGetAIDefaults(c *gin.Context) {
+	var def model.AIDefault
+	if err := s.db.First(&def, 1).Error; err != nil {
 		c.JSON(500, gin.H{"error": "INTERNAL"})
 		return
 	}
-	c.JSON(200, gin.H{"prices": prices})
+	c.JSON(200, gin.H{"model": def.Model, "temperature": def.Temperature, "maxTokens": def.MaxTokens})
+}
+
+type aiDefaultsReq struct {
+	Model       string  `json:"model"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"maxTokens"`
+}
+
+func (s *Server) adminUpdateAIDefaults(c *gin.Context) {
+	var req aiDefaultsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "默认模型不能为空"})
+		return
+	}
+	if req.Temperature < 0 || req.Temperature > 2 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "温度取值 0~2"})
+		return
+	}
+	if req.MaxTokens <= 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "maxTokens 必须为正"})
+		return
+	}
+	err := s.db.Model(&model.AIDefault{}).Where("id = 1").Updates(map[string]any{
+		"model": strings.TrimSpace(req.Model), "temperature": req.Temperature, "max_tokens": req.MaxTokens,
+	}).Error
+	if err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	c.Status(204)
+}
+
+// adminListPrices 按能力清单固定顺序返回,并合并中文名与说明(管理台可读展示)。
+func (s *Server) adminListPrices(c *gin.Context) {
+	var prices []model.CapabilityPrice
+	if err := s.db.Find(&prices).Error; err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	byKey := map[string]model.CapabilityPrice{}
+	for _, p := range prices {
+		byKey[p.Capability] = p
+	}
+	out := make([]gin.H, 0, len(prices))
+	for _, m := range ai.CapabilityMetas() {
+		p, ok := byKey[m.Key]
+		if !ok {
+			continue // 库里没有的能力不展示(理论上播种保证齐全)
+		}
+		out = append(out, gin.H{
+			"capability": p.Capability, "name": m.Name, "desc": m.Desc,
+			"credits": p.Credits, "enabled": p.Enabled,
+			"model": p.Model, "temperature": p.Temperature, "maxTokens": p.MaxTokens,
+		})
+	}
+	c.JSON(200, gin.H{"prices": out})
 }
 
 type priceReq struct {
-	Credits     *int64   `json:"credits"`
-	Enabled     *bool    `json:"enabled"`
-	Model       *string  `json:"model"`
-	Temperature *float64 `json:"temperature"`
-	MaxTokens   *int     `json:"maxTokens"`
+	Credits     int64    `json:"credits"`
+	Enabled     bool     `json:"enabled"`
+	Model       string   `json:"model"`       // 空 = 用全局默认
+	Temperature *float64 `json:"temperature"` // null = 用全局默认
+	MaxTokens   *int     `json:"maxTokens"`   // null = 用全局默认
 }
 
-// adminUpdatePrice 改价/改模型只影响之后的请求;在途请求与已建预占按价格快照执行。
+// adminUpdatePrice 整行保存;改价/改模型只影响之后的请求,在途请求与已建预占按价格快照执行。
 func (s *Server) adminUpdatePrice(c *gin.Context) {
 	var req priceReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
-	updates := map[string]any{}
-	if req.Credits != nil {
-		if *req.Credits < 0 {
-			c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "单价不能为负"})
-			return
-		}
-		updates["credits"] = *req.Credits
+	if req.Credits < 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "单价不能为负"})
+		return
 	}
-	if req.Enabled != nil {
-		updates["enabled"] = *req.Enabled
+	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "温度取值 0~2"})
+		return
 	}
-	if req.Model != nil && *req.Model != "" {
-		updates["model"] = *req.Model
-	}
-	if req.Temperature != nil {
-		updates["temperature"] = *req.Temperature
-	}
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		updates["max_tokens"] = *req.MaxTokens
-	}
-	if len(updates) == 0 {
-		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "没有可更新的字段"})
+	if req.MaxTokens != nil && *req.MaxTokens <= 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "maxTokens 必须为正"})
 		return
 	}
 	r := s.db.Model(&model.CapabilityPrice{}).
-		Where("capability = ?", c.Param("capability")).Updates(updates)
+		Where("capability = ?", c.Param("capability")).
+		Updates(map[string]any{
+			"credits": req.Credits, "enabled": req.Enabled, "model": strings.TrimSpace(req.Model),
+			"temperature_override": req.Temperature, "max_tokens_override": req.MaxTokens,
+		})
 	if r.Error != nil || r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "CAPABILITY_NOT_FOUND"})
 		return
