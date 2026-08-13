@@ -30,13 +30,13 @@ func SeedDefaults(db *gorm.DB) error {
 			return fmt.Errorf("播种套餐失败: %w", err)
 		}
 	}
-	// 全局 AI 默认参数(单行):模型名必须由管理员在管理台设置,不播种任何厂商占位值
+	// 全局默认模型(单行):模型名必须由管理员在管理台设置,不播种任何厂商占位值
 	var defCount int64
 	if err := db.Model(&model.AIDefault{}).Count(&defCount).Error; err != nil {
 		return err
 	}
 	if defCount == 0 {
-		if err := db.Create(&model.AIDefault{ID: 1, Model: "", MaxTokens: 4000}).Error; err != nil {
+		if err := db.Create(&model.AIDefault{ID: 1, Model: ""}).Error; err != nil {
 			return fmt.Errorf("播种 AI 默认参数失败: %w", err)
 		}
 	}
@@ -45,7 +45,7 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if priceCount == 0 {
-		// 只播种单价;模型参数一律走全局默认(温度由代码按能力定死,不是配置项)
+		// 只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死,不是配置项)
 		creditsByCap := map[string]int64{"analyze_form": 5, "match_columns": 5, "generate_rule": 3, "generate_field": 1}
 		var prices []model.CapabilityPrice
 		for _, m := range ai.CapabilityMetas() {

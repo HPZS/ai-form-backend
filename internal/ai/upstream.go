@@ -100,13 +100,28 @@ func (c *Caller) markOK(id int64) {
 	delete(c.breakers, id)
 }
 
-// capTemperature 各能力的采样温度:结构化输出一律 0(确定性),
-// 只有生成/润色字段内容需要一点随机性。这是提示词工程的一部分,不作为运营配置项。
+// 温度与 maxTokens 由代码按能力定死,不是运营配置项:
+// 温度——结构化输出一律 0(确定性),只有生成/润色字段内容要一点随机性;
+// maxTokens——取决于各能力输出结构的体量,配小了会截断 JSON 造成故障。
 var capTemperature = map[string]float64{
 	"generate_field": 0.3,
 }
 
-// callParams 本次调用实际生效的模型参数:能力覆盖优先,未覆盖用全局默认。
+const defaultMaxTokens = 2000
+
+var capMaxTokens = map[string]int{
+	"pick_open_button": 500,
+	"pick_form":        500,
+	"suggest_profile":  500,
+	"detect_grouping":  800,
+	"generate_rule":    4000,
+	"generate_field":   1000,
+	"explain_failure":  1000,
+	"classify_failure": 300,
+	"parse_command":    1500,
+}
+
+// callParams 本次调用实际生效的模型参数:模型可按能力覆盖,未覆盖用全局默认。
 type callParams struct {
 	Model       string
 	Temperature float64
@@ -115,12 +130,12 @@ type callParams struct {
 
 // resolveParams 合成生效参数;全局默认与能力覆盖都没配模型时报错(不静默降级)。
 func resolveParams(def model.AIDefault, cap model.CapabilityPrice) (callParams, error) {
-	p := callParams{Model: def.Model, Temperature: capTemperature[cap.Capability], MaxTokens: def.MaxTokens}
+	p := callParams{Model: def.Model, Temperature: capTemperature[cap.Capability], MaxTokens: defaultMaxTokens}
 	if cap.Model != "" {
 		p.Model = cap.Model
 	}
-	if cap.MaxTokens != nil {
-		p.MaxTokens = *cap.MaxTokens
+	if mt, ok := capMaxTokens[cap.Capability]; ok {
+		p.MaxTokens = mt
 	}
 	if p.Model == "" {
 		return p, fmt.Errorf("未配置默认模型,请在管理台「能力配置」设置")

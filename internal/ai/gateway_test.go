@@ -38,7 +38,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 		UserID: u.ID, PlanID: 1, AmountTotal: 100,
 		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
 	})
-	db.Create(&model.AIDefault{ID: 1, Model: "m", MaxTokens: 500})
+	db.Create(&model.AIDefault{ID: 1, Model: "m"})
 	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 5, Enabled: true})
 	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 

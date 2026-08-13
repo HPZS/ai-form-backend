@@ -60,18 +60,20 @@ func Migrate(db *gorm.DB) error {
 			return fmt.Errorf("清理旧能力配置失败: %w", err)
 		}
 	}
-	// 废弃列清理:temperature/max_tokens 是最初的旧结构;temperature_override 是
-	// 短暂存在过的"温度可覆盖"设计(温度已收回代码,不再是配置项)
-	for _, col := range []string{"temperature", "max_tokens", "temperature_override"} {
+	// 废弃列清理:temperature/max_tokens 是最初的旧结构;*_override 是短暂存在过的
+	// "参数可覆盖"设计——温度与 maxTokens 都已收回代码按能力定死,不再是配置项
+	for _, col := range []string{"temperature", "max_tokens", "temperature_override", "max_tokens_override"} {
 		if db.Migrator().HasColumn(&CapabilityPrice{}, col) {
 			if err := db.Migrator().DropColumn(&CapabilityPrice{}, col); err != nil {
 				return fmt.Errorf("删除旧列 %s 失败: %w", col, err)
 			}
 		}
 	}
-	if db.Migrator().HasColumn(&AIDefault{}, "temperature") {
-		if err := db.Migrator().DropColumn(&AIDefault{}, "temperature"); err != nil {
-			return fmt.Errorf("删除旧列 ai_defaults.temperature 失败: %w", err)
+	for _, col := range []string{"temperature", "max_tokens"} {
+		if db.Migrator().HasColumn(&AIDefault{}, col) {
+			if err := db.Migrator().DropColumn(&AIDefault{}, col); err != nil {
+				return fmt.Errorf("删除旧列 ai_defaults.%s 失败: %w", col, err)
+			}
 		}
 	}
 	// 部分唯一索引(postgres 与 sqlite 语法一致):
