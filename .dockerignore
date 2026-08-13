@@ -1,0 +1,12 @@
+# 构建上下文里排除:密钥、私有提示词、本地库文件与无关产物
+.git
+.env
+.env.*
+!.env.example
+prompts/
+config/private/
+aiform.db*
+bin/
+web/node_modules/
+web/src/
+docs/

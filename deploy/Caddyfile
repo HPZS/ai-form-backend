@@ -1,0 +1,5 @@
+# 域名从 .env 的 DOMAIN 注入;Caddy 自动申请与续期 Let's Encrypt 证书
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8090
+}
