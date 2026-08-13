@@ -68,6 +68,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 		{
 			a.POST("/send-code", s.sendCode)
 			a.POST("/login", s.login)
+			a.POST("/login-password", s.loginPassword)
 			a.POST("/refresh", s.refresh)
 			a.POST("/logout", s.logout)
 		}
@@ -79,6 +80,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 		u := v1.Group("", s.authRequired)
 		{
 			u.GET("/me", s.me)
+			u.POST("/auth/set-password", s.setPassword)
 			u.GET("/credits/ledger", s.ledger)
 			u.POST("/credits/estimate", s.estimate)
 			u.POST("/credits/holds", s.createHold)
@@ -235,6 +237,66 @@ func (s *Server) login(c *gin.Context) {
 		"accessToken":  pair.AccessToken,
 		"refreshToken": pair.RefreshToken,
 	})
+}
+
+type passwordLoginReq struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (s *Server) loginPassword(c *gin.Context) {
+	var req passwordLoginReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" || req.Password == "" {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	// 防爆破:按邮箱与 IP 双限
+	email := auth.NormalizeEmail(req.Email)
+	if !s.limiter.Allow("pw:"+email, 10, 15*time.Minute) ||
+		!s.limiter.Allow("pw-ip:"+c.ClientIP(), 30, 15*time.Minute) {
+		c.JSON(429, gin.H{"error": "RATE_LIMITED", "message": "尝试太频繁,请稍后再试"})
+		return
+	}
+	user, pair, err := s.auth.LoginPassword(email, req.Password)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrNoPassword):
+			c.JSON(401, gin.H{"error": "NO_PASSWORD", "message": err.Error()})
+		case errors.Is(err, auth.ErrPasswordInvalid):
+			c.JSON(401, gin.H{"error": "PASSWORD_INVALID", "message": err.Error()})
+		case errors.Is(err, auth.ErrUserBanned):
+			c.JSON(403, gin.H{"error": "BANNED"})
+		default:
+			c.JSON(500, gin.H{"error": "INTERNAL"})
+		}
+		return
+	}
+	c.JSON(200, gin.H{
+		"user":         gin.H{"email": user.Email, "role": user.Role},
+		"accessToken":  pair.AccessToken,
+		"refreshToken": pair.RefreshToken,
+	})
+}
+
+type setPasswordReq struct {
+	Password string `json:"password"`
+}
+
+func (s *Server) setPassword(c *gin.Context) {
+	var req setPasswordReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	if err := s.auth.SetPassword(c.GetInt64("userID"), req.Password); err != nil {
+		if errors.Is(err, auth.ErrWeakPassword) {
+			c.JSON(400, gin.H{"error": "WEAK_PASSWORD", "message": err.Error()})
+			return
+		}
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	c.Status(204)
 }
 
 type refreshReq struct {

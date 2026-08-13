@@ -88,6 +88,45 @@ func TestNewCodeInvalidatesOld(t *testing.T) {
 	}
 }
 
+func TestPasswordLogin(t *testing.T) {
+	svc, _ := setup(t)
+	code, _ := svc.IssueCode("a@b.com")
+	user, _, err := svc.Login("a@b.com", code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 未设密码时密码登录应明确报 ErrNoPassword
+	if _, _, err := svc.LoginPassword("a@b.com", "whatever123"); !errors.Is(err, ErrNoPassword) {
+		t.Fatalf("未设密码应报 ErrNoPassword,实际 %v", err)
+	}
+	// 弱密码拒绝
+	if err := svc.SetPassword(user.ID, "short"); !errors.Is(err, ErrWeakPassword) {
+		t.Fatalf("弱密码应拒绝,实际 %v", err)
+	}
+	if err := svc.SetPassword(user.ID, "password123"); err != nil {
+		t.Fatal(err)
+	}
+	// 正确密码可登录
+	u2, pair, err := svc.LoginPassword("A@B.com ", "password123")
+	if err != nil || u2.ID != user.ID || pair.AccessToken == "" {
+		t.Fatalf("密码登录失败: %v", err)
+	}
+	// 错误密码与不存在账号统一报 ErrPasswordInvalid(不暴露账号存在性)
+	if _, _, err := svc.LoginPassword("a@b.com", "wrongpass1"); !errors.Is(err, ErrPasswordInvalid) {
+		t.Fatalf("错密码应报 ErrPasswordInvalid,实际 %v", err)
+	}
+	if _, _, err := svc.LoginPassword("nobody@b.com", "whatever123"); !errors.Is(err, ErrPasswordInvalid) {
+		t.Fatalf("不存在账号应报 ErrPasswordInvalid,实际 %v", err)
+	}
+	// 重设密码后旧密码失效
+	if err := svc.SetPassword(user.ID, "newpassword456"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.LoginPassword("a@b.com", "password123"); !errors.Is(err, ErrPasswordInvalid) {
+		t.Fatalf("旧密码应失效,实际 %v", err)
+	}
+}
+
 func TestRefreshRotationAndLeakDetection(t *testing.T) {
 	svc, db := setup(t)
 	code, _ := svc.IssueCode("a@b.com")

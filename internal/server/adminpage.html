@@ -48,9 +48,15 @@
     </div>
     <div class="row">
       <input id="code" placeholder="6 位验证码" style="flex:1">
-      <button id="btnLogin">登录</button>
+      <button id="btnLogin">验证码登录</button>
     </div>
     <p class="muted">SMTP 未配置时,验证码打印在后端控制台。</p>
+    <hr style="border:none;border-top:1px solid #eee;margin:14px 0">
+    <div class="row">
+      <input id="pw" type="password" placeholder="密码(已设置过才可用)" style="flex:1">
+      <button id="btnPwLogin" class="ghost">密码登录</button>
+    </div>
+    <p class="muted">忘记密码:用验证码登录后在下方"账号设置"重设。</p>
   </section>
 
   <div id="panel" style="display:none">
@@ -90,6 +96,14 @@
         <thead><tr><th>ID</th><th>邮箱</th><th>角色</th><th>状态</th><th>注册时间</th></tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <section>
+      <h2>账号设置</h2>
+      <div class="row">
+        <input id="newPw" type="password" placeholder="新密码(至少 8 位)" style="width:220px">
+        <button id="btnSetPw" class="ghost">设置/重设密码</button>
+      </div>
     </section>
   </div>
 </main>
@@ -151,17 +165,30 @@ $('btnSend').onclick = async () => {
   } catch (e) { say(e.message); }
 };
 
+async function doLogin(path, body) {
+  const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
+  if (data.user.role !== 'admin') { say('该账号不是管理员'); return; }
+  access = data.accessToken; refresh = data.refreshToken;
+  localStorage.setItem('afb_access', access);
+  localStorage.setItem('afb_refresh', refresh);
+  await enter();
+}
+
 $('btnLogin').onclick = async () => {
+  try { await doLogin('/v1/auth/login', { email: $('email').value.trim(), code: $('code').value.trim() }); }
+  catch (e) { say(e.message); }
+};
+
+$('btnPwLogin').onclick = async () => {
+  try { await doLogin('/v1/auth/login-password', { email: $('email').value.trim(), password: $('pw').value }); }
+  catch (e) { say(e.message); }
+};
+
+$('btnSetPw').onclick = async () => {
   try {
-    const data = await api('/v1/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: $('email').value.trim(), code: $('code').value.trim() }),
-    });
-    if (data.user.role !== 'admin') { say('该账号不是管理员'); return; }
-    access = data.accessToken; refresh = data.refreshToken;
-    localStorage.setItem('afb_access', access);
-    localStorage.setItem('afb_refresh', refresh);
-    await enter();
+    await api('/v1/auth/set-password', { method: 'POST', body: JSON.stringify({ password: $('newPw').value }) });
+    $('newPw').value = '';
+    say('密码已设置,下次可直接密码登录', true);
   } catch (e) { say(e.message); }
 };
 

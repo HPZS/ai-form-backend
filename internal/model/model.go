@@ -10,11 +10,12 @@ import (
 // ===== 用户与认证 =====
 
 type User struct {
-	ID        int64     `gorm:"primaryKey"`
-	Email     string    `gorm:"uniqueIndex;size:255;not null"` // 入库前 trim+lower
-	Role      string    `gorm:"size:16;not null;default:user"` // user | admin
-	Status    string    `gorm:"size:16;not null;default:active"`
-	CreatedAt time.Time
+	ID           int64  `gorm:"primaryKey"`
+	Email        string `gorm:"uniqueIndex;size:255;not null"` // 入库前 trim+lower
+	PasswordHash string `gorm:"size:100;not null;default:''"`  // bcrypt;空=未设密码(只能验证码登录)
+	Role         string `gorm:"size:16;not null;default:user"` // user | admin
+	Status       string `gorm:"size:16;not null;default:active"`
+	CreatedAt    time.Time
 }
 
 // EmailCode 邮箱验证码。code_hash = HMAC-SHA256(code, pepper),同码验错 5 次作废。

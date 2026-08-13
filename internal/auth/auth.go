@@ -18,6 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/HPZS/ai-form-backend/internal/model"
@@ -35,10 +36,13 @@ const (
 )
 
 var (
-	ErrTooFrequent   = errors.New("发送太频繁,请稍后再试")
-	ErrCodeInvalid   = errors.New("验证码错误或已失效")
-	ErrTokenInvalid  = errors.New("登录已失效,请重新登录")
-	ErrUserBanned    = errors.New("账号已被禁用")
+	ErrTooFrequent     = errors.New("发送太频繁,请稍后再试")
+	ErrCodeInvalid     = errors.New("验证码错误或已失效")
+	ErrTokenInvalid    = errors.New("登录已失效,请重新登录")
+	ErrUserBanned      = errors.New("账号已被禁用")
+	ErrPasswordInvalid = errors.New("邮箱或密码不正确")
+	ErrNoPassword      = errors.New("该账号未设置密码,请用验证码登录后在设置中设定")
+	ErrWeakPassword    = errors.New("密码至少 8 位")
 )
 
 type Service struct {
@@ -209,6 +213,47 @@ func (s *Service) Login(email, code string) (*model.User, *TokenPair, error) {
 		return nil, nil, err
 	}
 	return &user, pair, nil
+}
+
+// LoginPassword 密码登录(密码是可选快捷方式;验证码是身份根,忘记密码走验证码登录后重设)。
+// 调用方需自行做尝试次数限流。
+func (s *Service) LoginPassword(email, password string) (*model.User, *TokenPair, error) {
+	email = NormalizeEmail(email)
+	var user model.User
+	err := s.db.Where("email = ?", email).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, ErrPasswordInvalid // 不暴露账号是否存在
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if user.PasswordHash == "" {
+		return nil, nil, ErrNoPassword
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return nil, nil, ErrPasswordInvalid
+	}
+	if user.Status != "active" {
+		return nil, nil, ErrUserBanned
+	}
+	pair, err := s.issueTokens(user.ID, uuid.NewString())
+	if err != nil {
+		return nil, nil, err
+	}
+	return &user, pair, nil
+}
+
+// SetPassword 设置/重设密码(需已登录,即已通过验证码或旧密码证明身份)。
+func (s *Service) SetPassword(userID int64, password string) error {
+	if len(password) < 8 {
+		return ErrWeakPassword
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.db.Model(&model.User{}).Where("id = ?", userID).
+		Update("password_hash", string(hash)).Error
 }
 
 func (s *Service) issueTokens(userID int64, familyID string) (*TokenPair, error) {
