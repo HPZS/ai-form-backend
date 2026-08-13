@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Tabs, TabPane, Form, Button, Toast, Typography } from '@douyinfe/semi-ui';
 import { post, setTokens } from '../api.js';
+import { offerSsoToExtension } from '../bridge.js';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -28,6 +29,7 @@ export default function Login() {
 
   const finish = (data) => {
     setTokens(data.accessToken, data.refreshToken);
+    offerSsoToExtension(); // 插件在场且未登录时,登录态即刻同步过去
     navigate('/', { replace: true });
   };
 
