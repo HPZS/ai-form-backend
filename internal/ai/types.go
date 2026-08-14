@@ -1,5 +1,5 @@
 // ai-form-backend - AGPL-3.0
-// 13 个 AI 能力的请求结构与输入上限校验。与插件 utils/ai.ts 的函数一一对应;
+// 12 个 AI 能力的请求结构与输入上限校验。与插件 utils/ai.ts 的函数一一对应;
 // 上限规格见技术方案 v3 §6.4(插件端先截断,服务端二次校验,超限直接 400)。
 package ai
 
@@ -132,7 +132,7 @@ func checkRows(name string, rows []map[string]string, maxRows, cellMax int) erro
 	return nil
 }
 
-// ===== 13 个能力的请求结构 =====
+// ===== 12 个能力的请求结构 =====
 
 type AssessPageReq struct {
 	Meta
@@ -410,55 +410,6 @@ func (r *ClassifyFailureReq) Validate() error {
 		return err
 	}
 	return capStr("error", r.Error, 1000)
-}
-
-// NameFieldBrief 待起名字段:在通用 brief 之上多带 context(字段周边的 DOM 文字线索,
-// 分组标题/相邻文本,"|"分隔)——启发式提不出名字的字段,全靠它推断用途。
-type NameFieldBrief struct {
-	Index       int      `json:"index"`
-	Tag         string   `json:"tag"`
-	Type        string   `json:"type"`
-	Label       string   `json:"label"`
-	Name        string   `json:"name"`
-	Placeholder string   `json:"placeholder"`
-	Context     string   `json:"context"`
-	Options     []string `json:"options,omitempty"`
-}
-
-type NameFieldsReq struct {
-	Meta
-	Fields []NameFieldBrief `json:"fields"`
-}
-
-func (r *NameFieldsReq) Validate() error {
-	if err := r.validateMeta(); err != nil {
-		return err
-	}
-	if len(r.Fields) == 0 {
-		return fmt.Errorf("fields 不能为空")
-	}
-	if len(r.Fields) > 100 {
-		return fmt.Errorf("fields 数量超限(100)")
-	}
-	for _, f := range r.Fields {
-		for n, v := range map[string]string{"label": f.Label, "name": f.Name, "placeholder": f.Placeholder} {
-			if err := capStr(n, v, 200); err != nil {
-				return err
-			}
-		}
-		if err := capStr("context", f.Context, 300); err != nil {
-			return err
-		}
-		if len(f.Options) > 50 {
-			return fmt.Errorf("字段选项数量超限")
-		}
-		for _, o := range f.Options {
-			if err := capStr("option", o, 200); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 type MappingItem struct {

@@ -51,29 +51,21 @@ func SeedDefaults(db *gorm.DB) error {
 			return fmt.Errorf("播种 AI 默认参数失败: %w", err)
 		}
 	}
-	// 能力单价逐能力补齐:新版本新增能力(如 name_fields)时,存量库自动补上缺的那条——
-	// Caller 要求每个能力必有配置行,缺行即"能力未配置"报错;已有行(管理员手改过的
-	// 单价/开关)一律不动。只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死)。
-	// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
-	// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。
-	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
-	var existing []model.CapabilityPrice
-	if err := db.Find(&existing).Error; err != nil {
+	var priceCount int64
+	if err := db.Model(&model.CapabilityPrice{}).Count(&priceCount).Error; err != nil {
 		return err
 	}
-	have := map[string]bool{}
-	for _, p := range existing {
-		have[p.Capability] = true
-	}
-	var missing []model.CapabilityPrice
-	for _, m := range ai.CapabilityMetas() {
-		if !have[m.Key] {
-			missing = append(missing, model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true})
+	if priceCount == 0 {
+		// 只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死,不是配置项)。
+		// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
+		// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。
+		creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
+		var prices []model.CapabilityPrice
+		for _, m := range ai.CapabilityMetas() {
+			prices = append(prices, model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true})
 		}
-	}
-	if len(missing) > 0 {
-		if err := db.Create(&missing).Error; err != nil {
-			return fmt.Errorf("补种能力单价失败: %w", err)
+		if err := db.Create(&prices).Error; err != nil {
+			return fmt.Errorf("播种能力单价失败: %w", err)
 		}
 	}
 	return nil

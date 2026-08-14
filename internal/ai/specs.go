@@ -1,5 +1,5 @@
 // ai-form-backend - AGPL-3.0
-// 13 个能力的输出解析与确定性校验,镜像插件 utils/ai.ts 的逻辑:
+// 12 个能力的输出解析与确定性校验,镜像插件 utils/ai.ts 的逻辑:
 // 丢弃模型幻觉出的不存在的 selector/列名/字段序号(插件端还有最后一道防线)。
 package ai
 
@@ -81,40 +81,6 @@ func Specs() []Spec {
 					out.OpenSelector = nil
 				}
 				return map[string]any{"submitSelector": out.SubmitSelector, "openSelector": out.OpenSelector}, nil
-			},
-		},
-		{
-			Name:   "name_fields",
-			NewReq: func() Request { return &NameFieldsReq{} },
-			Post: func(req Request, content string) (any, error) {
-				r := req.(*NameFieldsReq)
-				var out struct {
-					Names []struct {
-						Index int    `json:"index"`
-						Label string `json:"label"`
-					} `json:"names"`
-				}
-				if err := ParseAIJSON(content, &out); err != nil {
-					return nil, err
-				}
-				validIdx := map[int]bool{}
-				for _, f := range r.Fields {
-					validIdx[f.Index] = true
-				}
-				type namedField struct {
-					Index int    `json:"index"`
-					Label string `json:"label"`
-				}
-				names := []namedField{}
-				for _, n := range out.Names {
-					label := strings.TrimSpace(n.Label)
-					// 只认送来的字段序号;空名字丢弃(提示词要求拿不准就不输出,宁缺勿滥)
-					if !validIdx[n.Index] || label == "" {
-						continue
-					}
-					names = append(names, namedField{n.Index, truncRunes(label, 30)})
-				}
-				return map[string]any{"names": names}, nil
 			},
 		},
 		{

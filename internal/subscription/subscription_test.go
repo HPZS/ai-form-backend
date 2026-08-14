@@ -50,42 +50,6 @@ func TestSeedDefaults(t *testing.T) {
 	}
 }
 
-// 存量库升级:新增能力(如 name_fields)缺行时再次播种自动补上,已有行不被改动
-func TestSeedBackfillsNewCapability(t *testing.T) {
-	db, err := model.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := SeedDefaults(db); err != nil {
-		t.Fatal(err)
-	}
-	// 模拟旧库:没有 name_fields 行,且管理员改过 match_columns 单价
-	if err := db.Where("capability = ?", "name_fields").Delete(&model.CapabilityPrice{}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.CapabilityPrice{}).Where("capability = ?", "match_columns").
-		Update("credits", 80).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := SeedDefaults(db); err != nil {
-		t.Fatal(err)
-	}
-	var nf model.CapabilityPrice
-	if err := db.Where("capability = ?", "name_fields").First(&nf).Error; err != nil {
-		t.Fatalf("name_fields 应被补种: %v", err)
-	}
-	if nf.Credits != 0 || !nf.Enabled {
-		t.Fatalf("name_fields 应为 0 分且启用,实际 credits=%d enabled=%v", nf.Credits, nf.Enabled)
-	}
-	var mc model.CapabilityPrice
-	if err := db.Where("capability = ?", "match_columns").First(&mc).Error; err != nil {
-		t.Fatal(err)
-	}
-	if mc.Credits != 80 {
-		t.Fatalf("已有配置不应被播种覆盖,match_columns 应保持 80,实际 %d", mc.Credits)
-	}
-}
-
 // 首笔 base 订单加赠首充礼桶;第二笔不再赠送
 func TestCompleteOrderFirstBaseBonus(t *testing.T) {
 	db, err := model.OpenMemory()
