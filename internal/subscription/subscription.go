@@ -33,6 +33,13 @@ func SeedDefaults(db *gorm.DB) error {
 		if err := db.Create(&plans).Error; err != nil {
 			return fmt.Errorf("播种套餐失败: %w", err)
 		}
+		// GORM 坑:for_sale 列带 default:true,Create 时零值 false 会被忽略落成 true——
+		// 试用/首充礼是系统发放的,必须显式改回不可售,否则会出现在购买页
+		if err := db.Model(&model.SubscriptionPlan{}).
+			Where("plan_type IN ?", []string{model.PlanTypeTrial, model.PlanTypeBonus}).
+			Update("for_sale", false).Error; err != nil {
+			return fmt.Errorf("修正套餐可售标记失败: %w", err)
+		}
 	}
 	// 全局默认模型(单行):模型名必须由管理员在管理台设置,不播种任何厂商占位值
 	var defCount int64

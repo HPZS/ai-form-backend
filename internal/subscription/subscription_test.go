@@ -27,6 +27,13 @@ func TestSeedDefaults(t *testing.T) {
 		types[model.PlanTypePack] != 2 || types[model.PlanTypeBonus] != 1 {
 		t.Fatalf("套餐类型分布不符: %v", types)
 	}
+	// 试用/首充礼不可售(防 GORM default:true 吞掉零值 false 的回归)
+	for _, p := range plans {
+		wantSale := p.PlanType == model.PlanTypeBase || p.PlanType == model.PlanTypePack
+		if p.ForSale != wantSale {
+			t.Fatalf("套餐 %s(%s) 可售标记应为 %v,实际 %v", p.Name, p.PlanType, wantSale, p.ForSale)
+		}
+	}
 	var prices []model.CapabilityPrice
 	db.Find(&prices)
 	byCap := map[string]int64{}
