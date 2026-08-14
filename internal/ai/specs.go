@@ -67,8 +67,9 @@ func Specs() []Spec {
 			Post: func(req Request, content string) (any, error) {
 				r := req.(*AnalyzeFormReq)
 				var out struct {
-					SubmitSelector *string `json:"submitSelector"`
-					OpenSelector   *string `json:"openSelector"`
+					SubmitSelector  *string `json:"submitSelector"`
+					OpenSelector    *string `json:"openSelector"`
+					AdvanceSelector *string `json:"advanceSelector"`
 				}
 				if err := ParseAIJSON(content, &out); err != nil {
 					return nil, err
@@ -80,7 +81,17 @@ func Specs() []Spec {
 				if out.OpenSelector != nil && !buttonExists(all, *out.OpenSelector) {
 					out.OpenSelector = nil
 				}
-				return map[string]any{"submitSelector": out.SubmitSelector, "openSelector": out.OpenSelector}, nil
+				// 分步表单的"下一步"按钮:必须真实存在,且不能和提交按钮是同一个(自相矛盾按幻觉丢弃)
+				if out.AdvanceSelector != nil &&
+					(!buttonExists(r.Buttons, *out.AdvanceSelector) ||
+						(out.SubmitSelector != nil && *out.AdvanceSelector == *out.SubmitSelector)) {
+					out.AdvanceSelector = nil
+				}
+				return map[string]any{
+					"submitSelector":  out.SubmitSelector,
+					"openSelector":    out.OpenSelector,
+					"advanceSelector": out.AdvanceSelector,
+				}, nil
 			},
 		},
 		{
