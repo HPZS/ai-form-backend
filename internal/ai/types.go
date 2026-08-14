@@ -39,7 +39,11 @@ type FormFieldBrief struct {
 	Type        string   `json:"type"`
 	Name        string   `json:"name"`
 	Placeholder string   `json:"placeholder"`
-	Options     []string `json:"options,omitempty"`
+	// Context 字段周边的页面文字线索(分组标题/相邻文本,"|"分隔,越靠前离控件越近)。
+	// 自研组件库页面常提不出 label(Input/file),匹配全靠它判断字段用途——
+	// 这是页面上真实存在的文字,不是编造的名字。
+	Context string   `json:"context,omitempty"`
+	Options []string `json:"options,omitempty"`
 }
 
 type ButtonInfo struct {
@@ -65,6 +69,9 @@ func checkFields(fields []FormFieldBrief, max int) error {
 			if err := capStr(n, v, 200); err != nil {
 				return err
 			}
+		}
+		if err := capStr("context", f.Context, 300); err != nil {
+			return err
 		}
 		if len(f.Options) > 50 {
 			return fmt.Errorf("字段选项数量超限")
