@@ -19,7 +19,7 @@ import (
 
 func writePrompt(t *testing.T, dir, cap string) {
 	t.Helper()
-	content := "version: v1\nsystem: |\n  测试系统提示词\nuser: |\n  {{json .Req.Headers}}\n"
+	content := "version: v1\nsystem: |\n  测试系统提示词\nuser: |\n  {{json .Req}}\n"
 	if err := os.WriteFile(filepath.Join(dir, cap+".yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -35,32 +35,32 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 	u := model.User{Email: "t@example.com", Role: "user", Status: "active"}
 	db.Create(&u)
 	db.Create(&model.UserSubscription{
-		UserID: u.ID, PlanID: 1, AmountTotal: 100,
+		UserID: u.ID, PlanID: 1, PlanType: model.PlanTypeBase, AmountTotal: 100,
 		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
 	})
 	db.Create(&model.AIDefault{ID: 1, Model: "m"})
 	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 5, Enabled: true})
+	db.Create(&model.CapabilityPrice{Capability: "generate_field", Credits: 1, Enabled: true})
 	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 
 	dir := t.TempDir()
 	writePrompt(t, dir, "match_columns")
-	prompts, err := LoadPrompts(dir, []string{"match_columns"})
+	writePrompt(t, dir, "generate_field")
+	prompts, err := LoadPrompts(dir, []string{"match_columns", "generate_field"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := NewGateway(db, NewCaller(db), prompts)
 
-	var spec Spec
+	r := gin.New()
 	for _, sp := range Specs() {
-		if sp.Name == "match_columns" {
-			spec = sp
+		if sp.Name == "match_columns" || sp.Name == "generate_field" {
+			r.POST("/ai/"+strings.ReplaceAll(sp.Name, "_", "-"), func(c *gin.Context) {
+				c.Set("userID", u.ID)
+				c.Next()
+			}, g.Handler(sp))
 		}
 	}
-	r := gin.New()
-	r.POST("/ai/match-columns", func(c *gin.Context) {
-		c.Set("userID", u.ID)
-		c.Next()
-	}, g.Handler(spec))
 	return r, db, u.ID
 }
 
@@ -151,6 +151,142 @@ func TestInvalidOutputNoCharge(t *testing.T) {
 	}
 	var ledgerCount int64
 	db.Model(&model.CreditLedger{}).Where("user_id = ?", uid).Count(&ledgerCount)
+	if ledgerCount != 0 {
+		t.Fatalf("不应扣分,流水 %d 条", ledgerCount)
+	}
+}
+
+// 方案费防重:同一表单×同一列集(不同 requestId)只扣一次——计费键由服务端派生,不依赖客户端
+func TestPlanFeeChargedOncePerScheme(t *testing.T) {
+	upstream := httptest.NewServer(chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+
+	body1 := strings.Replace(matchBody, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", 1)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(body1)))
+	if w1.Code != 200 || w2.Code != 200 {
+		t.Fatalf("两次应都 200,实际 %d/%d: %s", w1.Code, w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w1.Body.String(), `"charged":5`) {
+		t.Fatalf("首次应扣方案费: %s", w1.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), `"charged":0`) {
+		t.Fatalf("同方案第二次应免单: %s", w2.Body.String())
+	}
+	var ledgerCount int64
+	db.Model(&model.CreditLedger{}).Where("user_id = ? AND delta < 0", uid).Count(&ledgerCount)
+	if ledgerCount != 1 {
+		t.Fatalf("应只有 1 条消费流水,实际 %d", ledgerCount)
+	}
+}
+
+// dynamic/repair 语境的映射免费(录入中动态字段与自愈重建由月费覆盖)
+func TestMatchContextDynamicRepairFree(t *testing.T) {
+	upstream := httptest.NewServer(chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+
+	for i, ctx := range []string{"dynamic", "repair"} {
+		reqID := "33333333-3333-4333-8333-33333333333" + string(rune('0'+i))
+		body := strings.Replace(matchBody, "11111111-1111-4111-8111-111111111111", reqID, 1)
+		body = strings.Replace(body, `"fields"`, `"context":"`+ctx+`","fields"`, 1)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(body)))
+		if w.Code != 200 {
+			t.Fatalf("context=%s 应 200,实际 %d: %s", ctx, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), `"charged":0`) {
+			t.Fatalf("context=%s 应免费: %s", ctx, w.Body.String())
+		}
+	}
+	var ledgerCount int64
+	db.Model(&model.CreditLedger{}).Where("user_id = ? AND delta < 0", uid).Count(&ledgerCount)
+	if ledgerCount != 0 {
+		t.Fatalf("不应有消费流水,实际 %d", ledgerCount)
+	}
+}
+
+// AI 生成格:同一行同一字段重新生成免费(计费键 = 行内容指纹 + 字段)
+func TestGenerateFieldRegenFree(t *testing.T) {
+	upstream := httptest.NewServer(chatOK(`这是生成的内容`))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+
+	genBody := func(reqID string) string {
+		return `{"requestId":"` + reqID + `","field":{"index":0,"label":"备注","tag":"input","type":"text","name":"remark","placeholder":""},"prompt":"写一句总结","row":{"姓名":"张三","金额":"100"}}`
+	}
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, httptest.NewRequest("POST", "/ai/generate-field", strings.NewReader(genBody("44444444-4444-4444-8444-444444444444"))))
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, httptest.NewRequest("POST", "/ai/generate-field", strings.NewReader(genBody("55555555-5555-4555-8555-555555555555"))))
+	if w1.Code != 200 || w2.Code != 200 {
+		t.Fatalf("两次应都 200,实际 %d/%d: %s", w1.Code, w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w1.Body.String(), `"charged":1`) {
+		t.Fatalf("首次生成应扣 1 分: %s", w1.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), `"charged":0`) {
+		t.Fatalf("同格重新生成应免单: %s", w2.Body.String())
+	}
+	var ledgerCount int64
+	db.Model(&model.CreditLedger{}).Where("user_id = ? AND capability = ? AND delta < 0", uid, "generate_field").Count(&ledgerCount)
+	if ledgerCount != 1 {
+		t.Fatalf("应只有 1 条消费流水,实际 %d", ledgerCount)
+	}
+}
+
+// 一列都没匹配上的映射不收方案费,也不占用计费组;之后同方案匹配成功时照常收费
+func TestAllNullMappingFree(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&hits, 1)
+		if n == 1 {
+			chatOK(`{"mapping":[{"fieldIndex":0,"column":null}]}`)(w, r) // 全空映射
+		} else {
+			chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`)(w, r) // 匹配成功
+		}
+	}))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w1.Code != 200 || !strings.Contains(w1.Body.String(), `"charged":0`) {
+		t.Fatalf("全空映射应免单,实际 %d: %s", w1.Code, w1.Body.String())
+	}
+	var ledgerCount int64
+	db.Model(&model.CreditLedger{}).Where("user_id = ? AND delta < 0", uid).Count(&ledgerCount)
+	if ledgerCount != 0 {
+		t.Fatalf("全空映射不应产生流水,实际 %d", ledgerCount)
+	}
+
+	// 同方案再次匹配(新 requestId),这次成功:应正常收方案费(计费组未被全空结果占用)
+	body2 := strings.Replace(matchBody, "11111111-1111-4111-8111-111111111111", "66666666-6666-4666-8666-666666666666", 1)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(body2)))
+	if w2.Code != 200 || !strings.Contains(w2.Body.String(), `"charged":5`) {
+		t.Fatalf("匹配成功应正常收费,实际 %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// 生成内容超长(注入顶格产出)按无效输出处理:422 且不扣分
+func TestGenerateFieldOversizeRejected(t *testing.T) {
+	long := strings.Repeat("啰", 2500)
+	upstream := httptest.NewServer(chatOK(long))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+
+	body := `{"requestId":"77777777-7777-4777-8777-777777777777","field":{"index":0,"label":"备注","tag":"input","type":"text","name":"remark","placeholder":""},"prompt":"写一句总结","row":{"姓名":"张三"}}`
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/generate-field", strings.NewReader(body)))
+	if w.Code != 422 {
+		t.Fatalf("超长输出应 422,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var ledgerCount int64
+	db.Model(&model.CreditLedger{}).Where("user_id = ? AND delta < 0", uid).Count(&ledgerCount)
 	if ledgerCount != 0 {
 		t.Fatalf("不应扣分,流水 %d 条", ledgerCount)
 	}

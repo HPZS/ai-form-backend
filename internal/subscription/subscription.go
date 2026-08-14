@@ -6,6 +6,7 @@ package subscription
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
@@ -21,10 +22,13 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if planCount == 0 {
+		// SKU 表见《积分与订阅计费方案》§4:1 积分 = 0.01 元
 		plans := []model.SubscriptionPlan{
-			{Name: "试用", PriceCents: 0, TotalCredits: 100, DurationDays: 14, ForSale: false, Trial: true, SortOrder: 0},
-			{Name: "基础版", PriceCents: 990, TotalCredits: 1000, DurationDays: 30, ForSale: true, SortOrder: 1},
-			{Name: "进阶版", PriceCents: 5990, TotalCredits: 10000, DurationDays: 30, ForSale: true, SortOrder: 2},
+			{Name: "试用", PlanType: model.PlanTypeTrial, PriceCents: 0, TotalCredits: 500, DurationDays: 14, ForSale: false, SortOrder: 0},
+			{Name: "个人版", PlanType: model.PlanTypeBase, PriceCents: 1990, TotalCredits: 500, DurationDays: 30, ForSale: true, SortOrder: 1},
+			{Name: "加油包·小", PlanType: model.PlanTypePack, PriceCents: 1000, TotalCredits: 1000, DurationDays: 365, ForSale: true, SortOrder: 2},
+			{Name: "加油包·大", PlanType: model.PlanTypePack, PriceCents: 4500, TotalCredits: 5000, DurationDays: 365, ForSale: true, SortOrder: 3},
+			{Name: "首充礼", PlanType: model.PlanTypeBonus, PriceCents: 0, TotalCredits: 1500, DurationDays: 60, ForSale: false, SortOrder: 99},
 		}
 		if err := db.Create(&plans).Error; err != nil {
 			return fmt.Errorf("播种套餐失败: %w", err)
@@ -45,8 +49,10 @@ func SeedDefaults(db *gorm.DB) error {
 		return err
 	}
 	if priceCount == 0 {
-		// 只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死,不是配置项)
-		creditsByCap := map[string]int64{"analyze_form": 5, "match_columns": 5, "generate_rule": 3, "generate_field": 1}
+		// 只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死,不是配置项)。
+		// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
+		// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。
+		creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
 		var prices []model.CapabilityPrice
 		for _, m := range ai.CapabilityMetas() {
 			prices = append(prices, model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true})
@@ -58,12 +64,13 @@ func SeedDefaults(db *gorm.DB) error {
 	return nil
 }
 
-// AssignBucket 给用户发一个额度桶(在调用方事务内执行)。
+// AssignBucket 给用户发一个额度桶(在调用方事务内执行);桶固化套餐类型,后改套餐不影响已发桶。
 func AssignBucket(tx *gorm.DB, userID int64, plan *model.SubscriptionPlan, orderID *int64) error {
 	now := time.Now()
 	sub := model.UserSubscription{
 		UserID:      userID,
 		PlanID:      plan.ID,
+		PlanType:    plan.PlanType,
 		OrderID:     orderID,
 		AmountTotal: plan.TotalCredits,
 		StartsAt:    now,
@@ -77,7 +84,7 @@ func AssignBucket(tx *gorm.DB, userID int64, plan *model.SubscriptionPlan, order
 // AssignTrial 注册时发试用桶;未配置试用套餐时跳过(不报错但记录)。
 func AssignTrial(tx *gorm.DB, userID int64) error {
 	var plan model.SubscriptionPlan
-	err := tx.Where("trial = ?", true).First(&plan).Error
+	err := tx.Where("plan_type = ?", model.PlanTypeTrial).First(&plan).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
@@ -115,7 +122,37 @@ func CompleteOrder(db *gorm.DB, tradeNo, notifyRaw string) error {
 		if err := tx.First(&plan, order.PlanID).Error; err != nil {
 			return err
 		}
-		return AssignBucket(tx, order.UserID, &plan, &order.ID)
+		if err := AssignBucket(tx, order.UserID, &plan, &order.ID); err != nil {
+			return err
+		}
+		// 首充礼(方案文档 §6.5):用户的首笔 base 订单额外发放赠送桶(1500 分/60 天)。
+		// 在同一事务内判断与发放:重复回调被上方状态守卫挡住,不会重复赠送。
+		if plan.PlanType == model.PlanTypeBase {
+			var paidBaseBefore int64
+			err := tx.Model(&model.PaymentOrder{}).
+				Joins("JOIN subscription_plans ON subscription_plans.id = payment_orders.plan_id").
+				Where("payment_orders.user_id = ? AND payment_orders.status = ? AND payment_orders.id <> ? AND subscription_plans.plan_type = ?",
+					order.UserID, model.OrderStatusPaid, order.ID, model.PlanTypeBase).
+				Count(&paidBaseBefore).Error
+			if err != nil {
+				return err
+			}
+			if paidBaseBefore == 0 {
+				var bonus model.SubscriptionPlan
+				err := tx.Where("plan_type = ?", model.PlanTypeBonus).First(&bonus).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					log.Printf("警告: 未配置首充礼套餐(plan_type=bonus),订单 %s 未发放首充赠送", tradeNo)
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if err := AssignBucket(tx, order.UserID, &bonus, &order.ID); err != nil {
+					return fmt.Errorf("发放首充礼失败: %w", err)
+				}
+			}
+		}
+		return nil
 	})
 }
 

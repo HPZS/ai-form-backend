@@ -54,14 +54,26 @@ type RefreshToken struct {
 
 // ===== 订阅(设计取自 new-api) =====
 
+// 套餐类型(积分与订阅计费方案 §6.1):
+//   base  底座订阅,承载"插件可用"的门禁资格
+//   trial 试用,注册自动发放,同样给予门禁资格
+//   pack  加油包,只加积分不给资格;购买需存在 active base
+//   bonus 赠送桶(首充礼),系统发放不可购买,不给资格
+const (
+	PlanTypeBase  = "base"
+	PlanTypeTrial = "trial"
+	PlanTypePack  = "pack"
+	PlanTypeBonus = "bonus"
+)
+
 type SubscriptionPlan struct {
 	ID           int64  `gorm:"primaryKey"`
 	Name         string `gorm:"size:64;not null"`
-	PriceCents   int64  `gorm:"not null"` // 人民币分,9.90 元 = 990
-	TotalCredits int64  `gorm:"not null"` // 套餐总积分
-	DurationDays int    `gorm:"not null"` // 30;试用 14
+	PlanType     string `gorm:"size:16;not null;default:''"` // base | trial | pack | bonus
+	PriceCents   int64  `gorm:"not null"`                    // 人民币分,19.90 元 = 1990
+	TotalCredits int64  `gorm:"not null"`                    // 套餐总积分
+	DurationDays int    `gorm:"not null"`                    // base 30;试用 14;pack 365;bonus 60
 	ForSale      bool   `gorm:"not null;default:true"`
-	Trial        bool   `gorm:"not null;default:false"` // 试用套餐:注册自动发放,不可购买
 	SortOrder    int    `gorm:"not null;default:0"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -73,13 +85,15 @@ const (
 	SubStatusRevoked = "revoked"
 )
 
-// UserSubscription 一笔购买 = 一个独立的月度额度桶,到期清零不结转。
+// UserSubscription 一笔购买 = 一个独立的额度桶,到期清零不结转。
 // 历史 AmountTotal/AmountUsed 永不改写,过期只改 status。
+// PlanType 冗余自套餐(发桶时固化):订阅门禁只认 base/trial 桶,改套餐类型不影响已发桶。
 type UserSubscription struct {
 	ID          int64  `gorm:"primaryKey"`
 	UserID      int64  `gorm:"index;not null"`
 	PlanID      int64  `gorm:"not null"`
-	OrderID     *int64 // 试用桶为空
+	PlanType    string `gorm:"size:16;not null;default:''"`
+	OrderID     *int64 // 试用/赠送桶为空
 	AmountTotal int64  `gorm:"not null"`
 	AmountUsed  int64  `gorm:"not null;default:0"`
 	StartsAt    time.Time
@@ -150,7 +164,7 @@ type CreditLedger struct {
 	UserID         int64  `gorm:"index;not null"`
 	SubscriptionID int64  `gorm:"not null"` // 扣到哪个桶
 	RequestID      string `gorm:"index;size:36"`
-	BillingGroupID string `gorm:"size:36"` // 表单识别计费组;部分唯一索引防重
+	BillingGroupID string `gorm:"size:64"` // 计费组(方案费/AI格由服务端从请求内容派生);部分唯一索引防重
 	Capability     string `gorm:"size:32"`
 	Delta          int64  `gorm:"not null"`
 	PriceSnapshot  int64  // 扣费时刻的能力单价
@@ -191,7 +205,7 @@ type AIRequest struct {
 	UserID         int64  `gorm:"index;not null"`
 	RequestID      string `gorm:"size:36;not null"` // UNIQUE(user_id, request_id) 迁移时建
 	TaskID         string `gorm:"size:36"`
-	BillingGroupID string `gorm:"size:36"`
+	BillingGroupID string `gorm:"size:64"`
 	Capability     string `gorm:"size:32;not null"`
 	Upstream       string `gorm:"size:32"`
 	Model          string `gorm:"size:64"`

@@ -26,6 +26,12 @@ func headerExists(headers []string, h string) bool {
 	return false
 }
 
+// mappedColumn match_columns 结果条目;PriceAfter 依据它判断"是否至少匹配上一列"
+type mappedColumn struct {
+	FieldIndex int     `json:"fieldIndex"`
+	Column     *string `json:"column"`
+}
+
 func truncRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -123,6 +129,36 @@ func Specs() []Spec {
 		{
 			Name:   "match_columns",
 			NewReq: func() Request { return &MatchColumnsReq{} },
+			// 方案费:计费键服务端派生(同方案永不重复扣);仅 initial 语境收费,
+			// dynamic/repair 定价为 0(自愈与动态补充由月费覆盖)
+			BillingGroup: func(userID int64, req Request) string {
+				return matchColumnsBillingGroup(userID, req.(*MatchColumnsReq))
+			},
+			PriceFor: func(req Request, configured int64) int64 {
+				r := req.(*MatchColumnsReq)
+				if r.Context == "" || r.Context == MatchContextInitial {
+					return configured
+				}
+				return 0
+			},
+			// 幻觉过滤后一列都没对上 = 没有建立起可用的方案:免单,也不占用计费组
+			// (之后同表单同资料再次匹配成功时才收方案费)
+			PriceAfter: func(req Request, result any, price int64) int64 {
+				m, ok := result.(map[string]any)
+				if !ok {
+					return price
+				}
+				items, ok := m["mapping"].([]mappedColumn)
+				if !ok {
+					return price
+				}
+				for _, it := range items {
+					if it.Column != nil {
+						return price
+					}
+				}
+				return 0
+			},
 			Post: func(req Request, content string) (any, error) {
 				r := req.(*MatchColumnsReq)
 				var out struct {
@@ -141,11 +177,7 @@ func Specs() []Spec {
 				for _, f := range r.Fields {
 					validIdx[f.Index] = true
 				}
-				type item struct {
-					FieldIndex int     `json:"fieldIndex"`
-					Column     *string `json:"column"`
-				}
-				filtered := []item{}
+				filtered := []mappedColumn{}
 				for _, m := range out.Mapping {
 					if !validIdx[m.FieldIndex] {
 						continue
@@ -153,7 +185,7 @@ func Specs() []Spec {
 					if m.Column != nil && !headerExists(r.Headers, *m.Column) {
 						continue
 					}
-					filtered = append(filtered, item{m.FieldIndex, m.Column})
+					filtered = append(filtered, mappedColumn{m.FieldIndex, m.Column})
 				}
 				return map[string]any{"mapping": filtered}, nil
 			},
@@ -226,10 +258,19 @@ func Specs() []Spec {
 		{
 			Name:   "generate_field",
 			NewReq: func() Request { return &GenerateFieldReq{} },
+			// 1 分/成功格:计费键 = 行内容指纹 + 字段,同格重新生成经防重自动免单
+			BillingGroup: func(userID int64, req Request) string {
+				return generateFieldBillingGroup(userID, req.(*GenerateFieldReq))
+			},
 			Post: func(req Request, content string) (any, error) {
 				v := strings.TrimSpace(content)
 				if v == "" {
 					return nil, fmt.Errorf("生成内容为空")
+				}
+				// 表单单字段不该有几千字:超长视为无效输出(422 不扣分),
+				// 防提示词注入借 maxTokens 顶格产出畸形长文灌进业务系统
+				if n := len([]rune(v)); n > 2000 {
+					return nil, fmt.Errorf("生成内容超长(%d 字符)", n)
 				}
 				return map[string]any{"content": v}, nil
 			},

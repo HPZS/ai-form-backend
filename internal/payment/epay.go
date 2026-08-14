@@ -54,21 +54,38 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "参数错误"})
 		return
 	}
-	client := h.client()
-	if client == nil {
-		c.JSON(503, gin.H{"error": "PAYMENT_UNCONFIGURED", "message": "支付未配置"})
-		return
-	}
 	var plan model.SubscriptionPlan
 	if err := h.db.First(&plan, req.PlanID).Error; err != nil {
 		c.JSON(404, gin.H{"error": "PLAN_NOT_FOUND", "message": "套餐不存在"})
 		return
 	}
-	if !plan.ForSale || plan.Trial || plan.PriceCents <= 0 {
+	// 只有 base 与 pack 可购买;试用/赠送桶由系统发放
+	sellable := plan.PlanType == model.PlanTypeBase || plan.PlanType == model.PlanTypePack
+	if !plan.ForSale || !sellable || plan.PriceCents <= 0 {
 		c.JSON(400, gin.H{"error": "PLAN_NOT_FOR_SALE", "message": "套餐不可购买"})
 		return
 	}
 	userID := c.GetInt64("userID")
+	// 加油包门禁(方案文档 §6.1):必须持有有效的底座订阅,堵住"买包绕过底座"的漏洞
+	if plan.PlanType == model.PlanTypePack {
+		var baseCnt int64
+		if err := h.db.Model(&model.UserSubscription{}).
+			Where("user_id = ? AND status = ? AND ends_at > ? AND plan_type = ?",
+				userID, model.SubStatusActive, time.Now(), model.PlanTypeBase).
+			Count(&baseCnt).Error; err != nil {
+			c.JSON(500, gin.H{"error": "INTERNAL", "message": "内部错误"})
+			return
+		}
+		if baseCnt == 0 {
+			c.JSON(403, gin.H{"error": "BASE_REQUIRED", "message": "加油包需要有效的个人版订阅,请先开通个人版"})
+			return
+		}
+	}
+	client := h.client()
+	if client == nil {
+		c.JSON(503, gin.H{"error": "PAYMENT_UNCONFIGURED", "message": "支付未配置"})
+		return
+	}
 	tradeNo := fmt.Sprintf("AIF%d%s", userID, uuid.NewString()[:18])
 
 	order := model.PaymentOrder{

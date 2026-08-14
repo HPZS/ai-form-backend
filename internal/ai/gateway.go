@@ -29,6 +29,14 @@ type Spec struct {
 	Name   string
 	NewReq func() Request
 	Post   func(req Request, content string) (any, error)
+	// BillingGroup 可选:服务端从请求内容派生计费组(方案费/AI格防重的关键,不依赖客户端诚实)。
+	// 返回非空时覆盖客户端传的 billingGroupId。
+	BillingGroup func(userID int64, req Request) string
+	// PriceFor 可选:按请求内容调整本次单价(如 match_columns 仅 initial 语境收方案费)。
+	PriceFor func(req Request, configured int64) int64
+	// PriceAfter 可选:拿到解析后的结果再定价(如 match_columns 一列都没匹配上时免单——
+	// "成功建立方案才收费",全空方案对用户没有价值,不收钱也不占用计费组)。
+	PriceAfter func(req Request, result any, price int64) int64
 }
 
 type Gateway struct {
@@ -65,6 +73,11 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		meta := req.GetMeta()
+		if spec.BillingGroup != nil {
+			if g := spec.BillingGroup(userID, req); g != "" {
+				meta.BillingGroupID = g // 服务端派生,覆盖客户端声明
+			}
+		}
 
 		// 2. 幂等闸门
 		now := time.Now()
@@ -133,6 +146,9 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			apiErr(c, 403, "CAPABILITY_DISABLED", "该能力已停用")
 			return
 		}
+		if spec.PriceFor != nil {
+			price = spec.PriceFor(req, price)
+		}
 		hasSub, err := hasActiveSubscription(g.db, userID)
 		if err != nil {
 			apiErr(c, 500, "INTERNAL", "内部错误")
@@ -142,6 +158,17 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			g.releaseLease(ar.ID)
 			apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
 			return
+		}
+		// 计费组已扣过 = 本次必然免单(同方案重认/同格重生成),余额为零也放行
+		if price > 0 && meta.BillingGroupID != "" {
+			charged, err := g.groupAlreadyCharged(userID, meta.BillingGroupID)
+			if err != nil {
+				apiErr(c, 500, "INTERNAL", "内部错误")
+				return
+			}
+			if charged {
+				price = 0
+			}
 		}
 		if price > 0 {
 			avail, err := credits.Available(g.db, userID)
@@ -183,6 +210,9 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			g.finishFailed(ar.ID, model.AIReqInvalid, call, promptVer, start)
 			apiErr(c, 422, "AI_OUTPUT_INVALID", "AI 输出不符合预期,本次不扣积分")
 			return
+		}
+		if spec.PriceAfter != nil {
+			price = spec.PriceAfter(req, result, price)
 		}
 
 		// 5. 扣费与状态落定(同事务)
@@ -260,10 +290,22 @@ func (g *Gateway) capabilityPrice(capability string) (price int64, enabled bool,
 	return p.Credits, p.Enabled, nil
 }
 
+// hasActiveSubscription 订阅门禁:只认 base/trial 桶。加油包/赠送桶只加积分不给资格,
+// 订阅断档时购买积分随门禁自然冻结、复订即恢复(方案文档 §4)。
 func hasActiveSubscription(db *gorm.DB, userID int64) (bool, error) {
 	var cnt int64
 	err := db.Model(&model.UserSubscription{}).
-		Where("user_id = ? AND status = ? AND ends_at > ?", userID, model.SubStatusActive, time.Now()).
+		Where("user_id = ? AND status = ? AND ends_at > ? AND plan_type IN ?",
+			userID, model.SubStatusActive, time.Now(), []string{model.PlanTypeBase, model.PlanTypeTrial}).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
+// groupAlreadyCharged 该计费组是否已有消费流水(与 credits.Charge 的防重判据一致)。
+func (g *Gateway) groupAlreadyCharged(userID int64, groupID string) (bool, error) {
+	var cnt int64
+	err := g.db.Model(&model.CreditLedger{}).
+		Where("user_id = ? AND billing_group_id = ? AND delta < 0", userID, groupID).
 		Count(&cnt).Error
 	return cnt > 0, err
 }

@@ -173,12 +173,40 @@ func (s *Server) adminRequired(c *gin.Context) {
 	c.Next()
 }
 
+// AI 限流阈值:正常录入远用不到,只有滥用才触发(方案文档 §5"包含≠无限")
+const (
+	aiPerCapPerMinute = 60
+	aiPerUserPerDay   = 5000
+	aiPerIPPerDay     = 10000 // 同 IP 全部账号合计:一次性邮箱农场的总量闸门
+	aiTrialPerDay     = 1000  // 无付费底座(试用)的更低日限:薅免费额度的成本闸门
+)
+
+// hasActiveBase 是否持有付费底座桶(试用不算);试用档 AI 日限更严。
+func hasActiveBase(db *gorm.DB, userID int64) (bool, error) {
+	var cnt int64
+	err := db.Model(&model.UserSubscription{}).
+		Where("user_id = ? AND status = ? AND ends_at > ? AND plan_type = ?",
+			userID, model.SubStatusActive, time.Now(), model.PlanTypeBase).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
 func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := c.GetString("email")
-		if !s.limiter.Allow("ai-min:"+capability+":"+key, 60, time.Minute) ||
-			!s.limiter.Allow("ai-day:"+key, 5000, 24*time.Hour) {
+		if !s.limiter.Allow("ai-min:"+capability+":"+key, aiPerCapPerMinute, time.Minute) ||
+			!s.limiter.Allow("ai-day:"+key, aiPerUserPerDay, 24*time.Hour) ||
+			!s.limiter.Allow("ai-ip-day:"+c.ClientIP(), aiPerIPPerDay, 24*time.Hour) {
 			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": "调用太频繁,请稍后再试"})
+			return
+		}
+		hasBase, err := hasActiveBase(s.db, c.GetInt64("userID"))
+		if err != nil {
+			c.AbortWithStatusJSON(500, gin.H{"error": "INTERNAL"})
+			return
+		}
+		if !hasBase && !s.limiter.Allow("ai-day-trial:"+key, aiTrialPerDay, 24*time.Hour) {
+			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": "试用期今日的调用额度已用完,开通个人版后不受此限制"})
 			return
 		}
 		c.Next()
@@ -416,6 +444,7 @@ func (s *Server) me(c *gin.Context) {
 			"remaining": sub.AmountTotal - sub.AmountUsed,
 			"total":     sub.AmountTotal,
 			"endsAt":    sub.EndsAt,
+			"planType":  sub.PlanType,
 		})
 	}
 	c.JSON(200, gin.H{
@@ -440,12 +469,12 @@ func (s *Server) ledger(c *gin.Context) {
 	c.JSON(200, gin.H{"entries": rows})
 }
 
+// estimateReq 预估请求(方案文档 §6.6):公式 = 新方案数 × 方案费 + AI 格数 × 格费。
+// 判断/诊断/自愈类能力 0 分,不进预估。
 type estimateReq struct {
-	TaskID      string `json:"taskId"`
-	NewForms    int64  `json:"newForms"`
-	NewMappings int64  `json:"newMappings"`
-	NewRules    int64  `json:"newRules"`
-	AICells     int64  `json:"aiCells"`
+	TaskID   string `json:"taskId"`
+	NewPlans int64  `json:"newPlans"`
+	AICells  int64  `json:"aiCells"`
 }
 
 func (s *Server) capPrice(capability string) int64 {
@@ -462,9 +491,7 @@ func (s *Server) estimate(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
-	estimated := req.NewForms*s.capPrice("analyze_form") +
-		req.NewMappings*s.capPrice("match_columns") +
-		req.NewRules*s.capPrice("generate_rule") +
+	estimated := req.NewPlans*s.capPrice("match_columns") +
 		req.AICells*s.capPrice("generate_field")
 	avail, err := credits.Available(s.db, c.GetInt64("userID"))
 	if err != nil {
@@ -573,7 +600,7 @@ func (s *Server) plans(c *gin.Context) {
 	out := make([]gin.H, 0, len(plans))
 	for _, p := range plans {
 		out = append(out, gin.H{
-			"id": p.ID, "name": p.Name, "priceCents": p.PriceCents,
+			"id": p.ID, "name": p.Name, "planType": p.PlanType, "priceCents": p.PriceCents,
 			"credits": p.TotalCredits, "durationDays": p.DurationDays,
 		})
 	}
@@ -593,11 +620,17 @@ func (s *Server) adminListPlans(c *gin.Context) {
 
 type planReq struct {
 	Name         string `json:"name"`
+	PlanType     string `json:"planType"` // base | trial | pack | bonus
 	PriceCents   int64  `json:"priceCents"`
 	TotalCredits int64  `json:"totalCredits"`
 	DurationDays int    `json:"durationDays"`
 	ForSale      *bool  `json:"forSale"`
 	SortOrder    int    `json:"sortOrder"`
+}
+
+func validPlanType(t string) bool {
+	return t == model.PlanTypeBase || t == model.PlanTypeTrial ||
+		t == model.PlanTypePack || t == model.PlanTypeBonus
 }
 
 func (s *Server) adminCreatePlan(c *gin.Context) {
@@ -606,12 +639,16 @@ func (s *Server) adminCreatePlan(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
+	if !validPlanType(req.PlanType) {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "planType 必须是 base/trial/pack/bonus"})
+		return
+	}
 	forSale := true
 	if req.ForSale != nil {
 		forSale = *req.ForSale
 	}
 	p := model.SubscriptionPlan{
-		Name: req.Name, PriceCents: req.PriceCents, TotalCredits: req.TotalCredits,
+		Name: req.Name, PlanType: req.PlanType, PriceCents: req.PriceCents, TotalCredits: req.TotalCredits,
 		DurationDays: req.DurationDays, ForSale: forSale, SortOrder: req.SortOrder,
 	}
 	if err := s.db.Create(&p).Error; err != nil {
@@ -631,6 +668,13 @@ func (s *Server) adminUpdatePlan(c *gin.Context) {
 	updates := map[string]any{}
 	if req.Name != "" {
 		updates["name"] = req.Name
+	}
+	if req.PlanType != "" {
+		if !validPlanType(req.PlanType) {
+			c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "planType 必须是 base/trial/pack/bonus"})
+			return
+		}
+		updates["plan_type"] = req.PlanType // 只影响之后发的桶,已发桶类型已固化
 	}
 	if req.PriceCents > 0 {
 		updates["price_cents"] = req.PriceCents

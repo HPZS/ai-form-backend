@@ -23,7 +23,7 @@ func setup(t *testing.T) (*Service, *gorm.DB) {
 func TestLoginFlowAndTrial(t *testing.T) {
 	svc, db := setup(t)
 	// 播种试用套餐
-	db.Create(&model.SubscriptionPlan{Name: "试用", TotalCredits: 100, DurationDays: 14, Trial: true})
+	db.Create(&model.SubscriptionPlan{Name: "试用", PlanType: model.PlanTypeTrial, TotalCredits: 500, DurationDays: 14})
 
 	code, err := svc.IssueCode("User@Example.com ")
 	if err != nil {
@@ -39,8 +39,8 @@ func TestLoginFlowAndTrial(t *testing.T) {
 	// 注册应发试用桶
 	var subs []model.UserSubscription
 	db.Find(&subs, "user_id = ?", user.ID)
-	if len(subs) != 1 || subs[0].AmountTotal != 100 {
-		t.Fatalf("应发放试用桶 100 分,实际 %+v", subs)
+	if len(subs) != 1 || subs[0].AmountTotal != 500 || subs[0].PlanType != model.PlanTypeTrial {
+		t.Fatalf("应发放 500 分试用桶,实际 %+v", subs)
 	}
 	// access token 可验证
 	uid, err := svc.VerifyAccess(pair.AccessToken)

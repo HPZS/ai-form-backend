@@ -224,8 +224,17 @@ func (r *PickFormReq) Validate() error {
 	return capStr("fileName", r.FileName, 200)
 }
 
+// match_columns 的调用语境(方案文档 §6.3):只有 initial(初次建方案)收方案费;
+// dynamic(录入中动态字段增量映射)与 repair(改版/证伪后自愈重建)免费。
+const (
+	MatchContextInitial = "initial"
+	MatchContextDynamic = "dynamic"
+	MatchContextRepair  = "repair"
+)
+
 type MatchColumnsReq struct {
 	Meta
+	Context   string            `json:"context,omitempty"` // initial(默认) | dynamic | repair
 	Fields    []FormFieldBrief  `json:"fields"`
 	Headers   []string          `json:"headers"`
 	SampleRow map[string]string `json:"sampleRow"`
@@ -234,6 +243,11 @@ type MatchColumnsReq struct {
 func (r *MatchColumnsReq) Validate() error {
 	if err := r.validateMeta(); err != nil {
 		return err
+	}
+	switch r.Context {
+	case "", MatchContextInitial, MatchContextDynamic, MatchContextRepair:
+	default:
+		return fmt.Errorf("context 必须是 initial/dynamic/repair")
 	}
 	if err := checkFields(r.Fields, 200); err != nil {
 		return err

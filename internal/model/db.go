@@ -46,6 +46,10 @@ func Migrate(db *gorm.DB) error {
 	// 新版改为"全局默认 + 可空覆盖"。旧列存在说明库是老结构,迁移后要清掉播种的占位模型名。
 	legacyCapSchema := db.Migrator().HasTable(&CapabilityPrice{}) &&
 		db.Migrator().HasColumn(&CapabilityPrice{}, "temperature")
+	// 计费模型 M0 改造前置判断:旧版套餐表用 trial 布尔列区分试用,新版改为 plan_type 四类。
+	// 旧列存在 = 旧计费体系(按次扣分):套餐与能力单价整体重播种(产品未上线,无真实用户,方案文档 §6.7)
+	legacyBillingSchema := db.Migrator().HasTable(&SubscriptionPlan{}) &&
+		db.Migrator().HasColumn(&SubscriptionPlan{}, "trial")
 	// 默认模型表曾被 GORM 蛇形化成 a_idefaults:先改名保数据,再走常规迁移
 	if db.Migrator().HasTable("a_idefaults") && !db.Migrator().HasTable("ai_defaults") {
 		if err := db.Migrator().RenameTable("a_idefaults", "ai_defaults"); err != nil {
@@ -64,6 +68,28 @@ func Migrate(db *gorm.DB) error {
 		// 旧配置全是播种占位值(非管理员手配),重置为"用全局默认",再删除废弃列
 		if err := db.Model(&CapabilityPrice{}).Where("1 = 1").Update("model", "").Error; err != nil {
 			return fmt.Errorf("清理旧能力配置失败: %w", err)
+		}
+	}
+	if legacyBillingSchema {
+		// 1) 已发桶按旧套餐的 trial 标记回填 plan_type(开发库桶保持可用)
+		if err := db.Exec(`UPDATE user_subscriptions SET plan_type = 'trial'
+			WHERE plan_id IN (SELECT id FROM subscription_plans WHERE trial = ?)`, true).Error; err != nil {
+			return fmt.Errorf("回填桶类型失败: %w", err)
+		}
+		if err := db.Exec(`UPDATE user_subscriptions SET plan_type = 'base'
+			WHERE plan_type = '' OR plan_type IS NULL`).Error; err != nil {
+			return fmt.Errorf("回填桶类型失败: %w", err)
+		}
+		// 2) 旧套餐与旧能力单价整体清空,由 SeedDefaults 按新计费模型重播种
+		if err := db.Exec(`DELETE FROM subscription_plans`).Error; err != nil {
+			return fmt.Errorf("清空旧套餐失败: %w", err)
+		}
+		if err := db.Exec(`DELETE FROM capability_prices`).Error; err != nil {
+			return fmt.Errorf("清空旧能力单价失败: %w", err)
+		}
+		// 3) 删除废弃的 trial 列
+		if err := db.Migrator().DropColumn(&SubscriptionPlan{}, "trial"); err != nil {
+			return fmt.Errorf("删除旧列 subscription_plans.trial 失败: %w", err)
 		}
 	}
 	// 废弃列清理:temperature/max_tokens 是最初的旧结构;*_override 是短暂存在过的

@@ -68,12 +68,22 @@ export default function TopUp() {
           <Col xs={24} sm={12} lg={8} key={p.id}>
             <Card
               title={p.name}
-              headerExtraContent={<Tag color="blue">{p.durationDays} 天</Tag>}
+              headerExtraContent={
+                p.planType === 'pack'
+                  ? <Tag color="green">积分包 · {p.durationDays} 天有效</Tag>
+                  : <Tag color="blue">订阅 · {p.durationDays} 天</Tag>
+              }
               className="plan-card"
             >
               <Typography.Title heading={2} className="plan-price"><small>¥</small>{(p.priceCents / 100).toFixed(2)}</Typography.Title>
-              <Typography.Paragraph type="secondary">{p.credits} 积分 · 有效期 {p.durationDays} 天</Typography.Paragraph>
-              <Typography.Paragraph type="tertiary" size="small">到期未用完的积分清零,可叠加购买</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">
+                {p.planType === 'pack' ? `${p.credits} 积分` : `插件全部功能 · 固定流程录入不限量 · 每月含 ${p.credits} 积分`}
+              </Typography.Paragraph>
+              <Typography.Paragraph type="tertiary" size="small">
+                {p.planType === 'pack'
+                  ? '需持有有效的个人版订阅;购买的积分 365 天内有效,订阅断档时冻结、复订即恢复'
+                  : '首次开通加赠 1500 积分(60 天有效);月含积分到期清零,可随时叠加加油包'}
+              </Typography.Paragraph>
               <Button theme="solid" block loading={buying === p.id} onClick={() => buy(p)}>立即购买</Button>
             </Card>
           </Col>
