@@ -202,6 +202,94 @@ func mustHoldsAll(tx *gorm.DB, userID int64, now time.Time) int64 {
 	return v
 }
 
+// ===== 管理员手动调整(测试发分/补偿/人工退款) =====
+
+// AdminGrant 管理员手动发一个额度桶,不挂套餐(PlanID=0)。
+// amount 可为 0(只给订阅资格,如发 base 桶续订阅);amount>0 时写一条正向流水,
+// 用户流水页可见"管理员发放 +N"——手动调整必须留痕,不静默。
+func AdminGrant(db *gorm.DB, userID int64, planType string, amount int64, days int) (*model.UserSubscription, error) {
+	if days <= 0 || days > 3650 {
+		return nil, fmt.Errorf("有效期天数必须在 1~3650 之间")
+	}
+	if amount < 0 {
+		return nil, fmt.Errorf("积分不能为负")
+	}
+	now := time.Now()
+	var sub model.UserSubscription
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockUser(tx, userID); err != nil {
+			return err
+		}
+		sub = model.UserSubscription{
+			UserID: userID, PlanID: 0, PlanType: planType,
+			AmountTotal: amount, StartsAt: now, EndsAt: now.AddDate(0, 0, days),
+			Status: model.SubStatusActive, CreatedAt: now,
+		}
+		if err := tx.Create(&sub).Error; err != nil {
+			return err
+		}
+		if amount > 0 {
+			subs, err := activeBuckets(tx, userID, now)
+			if err != nil {
+				return err
+			}
+			avail := clampZero(bucketsRemaining(subs) - mustHoldsAll(tx, userID, now))
+			row := model.CreditLedger{
+				UserID: userID, SubscriptionID: sub.ID, Capability: "admin_grant",
+				Delta: amount, BalanceAfter: avail, CreatedAt: now,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return fmt.Errorf("写流水失败: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+// ExtendBucket 延长某个桶的有效期;延到未来的过期桶自动重新激活。已作废的桶不允许延。
+func ExtendBucket(db *gorm.DB, subID int64, days int) (*model.UserSubscription, error) {
+	if days <= 0 || days > 3650 {
+		return nil, fmt.Errorf("延长天数必须在 1~3650 之间")
+	}
+	var sub model.UserSubscription
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&sub, subID).Error; err != nil {
+			return err
+		}
+		if sub.Status == model.SubStatusRevoked {
+			return fmt.Errorf("已作废的桶不能延期")
+		}
+		sub.EndsAt = sub.EndsAt.AddDate(0, 0, days)
+		if sub.Status == model.SubStatusExpired && sub.EndsAt.After(time.Now()) {
+			sub.Status = model.SubStatusActive
+		}
+		return tx.Model(&model.UserSubscription{}).Where("id = ?", sub.ID).
+			Updates(map[string]any{"ends_at": sub.EndsAt, "status": sub.Status}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+// RevokeBucket 作废一个桶(剩余额度立即不可用);历史流水不动。
+func RevokeBucket(db *gorm.DB, subID int64) error {
+	r := db.Model(&model.UserSubscription{}).
+		Where("id = ? AND status <> ?", subID, model.SubStatusRevoked).
+		Update("status", model.SubStatusRevoked)
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // ===== 任务预占 =====
 
 const (

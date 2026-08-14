@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +133,9 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			admin.DELETE("/upstreams/:id", s.adminDeleteUpstream)
 			admin.GET("/users", s.adminListUsers)
 			admin.PUT("/users/:id", s.adminUpdateUser)
+			admin.GET("/users/:id/subscriptions", s.adminListUserSubs)
+			admin.POST("/users/:id/grants", s.adminGrantBucket)
+			admin.PATCH("/subscriptions/:id", s.adminAdjustSub)
 		}
 	}
 	return r
@@ -939,6 +943,101 @@ func (s *Server) adminUpdateUser(c *gin.Context) {
 			Update("revoked_at", time.Now())
 	}
 	c.Status(204)
+}
+
+// ===== 管理员手动调整额度(测试发分/补偿/人工退款) =====
+
+// adminListUserSubs 某用户的全部额度桶(含过期/作废),新的在前;PlanID=0 显示为手动发放。
+func (s *Server) adminListUserSubs(c *gin.Context) {
+	var subs []model.UserSubscription
+	if err := s.db.Where("user_id = ?", c.Param("id")).Order("id desc").Limit(100).Find(&subs).Error; err != nil {
+		c.JSON(500, gin.H{"error": "INTERNAL"})
+		return
+	}
+	planNames := map[int64]string{}
+	var plans []model.SubscriptionPlan
+	s.db.Find(&plans)
+	for _, p := range plans {
+		planNames[p.ID] = p.Name
+	}
+	out := make([]gin.H, 0, len(subs))
+	for _, sub := range subs {
+		name := planNames[sub.PlanID]
+		if sub.PlanID == 0 {
+			name = "手动发放"
+		}
+		out = append(out, gin.H{
+			"id": sub.ID, "planName": name, "planType": sub.PlanType,
+			"total": sub.AmountTotal, "used": sub.AmountUsed,
+			"startsAt": sub.StartsAt, "endsAt": sub.EndsAt, "status": sub.Status,
+		})
+	}
+	c.JSON(200, gin.H{"subscriptions": out})
+}
+
+type grantReq struct {
+	PlanType string `json:"planType"` // base(给订阅资格) | pack | bonus(纯积分)
+	Credits  int64  `json:"credits"`
+	Days     int    `json:"days"`
+}
+
+func (s *Server) adminGrantBucket(c *gin.Context) {
+	var req grantReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	if req.PlanType != model.PlanTypeBase && req.PlanType != model.PlanTypePack && req.PlanType != model.PlanTypeBonus {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "planType 必须是 base/pack/bonus"})
+		return
+	}
+	var target model.User
+	if err := s.db.First(&target, "id = ?", c.Param("id")).Error; err != nil {
+		c.JSON(404, gin.H{"error": "USER_NOT_FOUND"})
+		return
+	}
+	sub, err := credits.AdminGrant(s.db, target.ID, req.PlanType, req.Credits, req.Days)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"id": sub.ID, "endsAt": sub.EndsAt})
+}
+
+type adjustSubReq struct {
+	AddDays int  `json:"addDays"`
+	Revoke  bool `json:"revoke"`
+}
+
+func (s *Server) adminAdjustSub(c *gin.Context) {
+	var req adjustSubReq
+	if err := c.ShouldBindJSON(&req); err != nil || (req.AddDays <= 0 && !req.Revoke) {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "addDays 或 revoke 必填其一"})
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
+		return
+	}
+	if req.Revoke {
+		if err := credits.RevokeBucket(s.db, id); err != nil {
+			c.JSON(404, gin.H{"error": "SUBSCRIPTION_NOT_FOUND"})
+			return
+		}
+		c.Status(204)
+		return
+	}
+	sub, err := credits.ExtendBucket(s.db, id, req.AddDays)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(404, gin.H{"error": "SUBSCRIPTION_NOT_FOUND"})
+			return
+		}
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"id": sub.ID, "endsAt": sub.EndsAt, "status": sub.Status})
 }
 
 // ===== about(AGPL §13 源码入口 + new-api §7 附加条款署名) =====
