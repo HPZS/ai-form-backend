@@ -110,8 +110,12 @@ func TestResolveParams(t *testing.T) {
 	def := model.AIDefault{Model: "base"}
 
 	p, err := resolveParams(def, model.CapabilityPrice{Capability: "match_columns"})
-	if err != nil || p.Model != "base" || p.Temperature != 0 || p.MaxTokens != defaultMaxTokens {
-		t.Fatalf("未覆盖应用默认模型与代码定的参数,实际 %+v err=%v", p, err)
+	if err != nil || p.Model != "base" || p.Temperature != 0 || p.MaxTokens != capMaxTokens["match_columns"] {
+		t.Fatalf("未覆盖应用默认模型与该能力登记的参数,实际 %+v err=%v", p, err)
+	}
+	// 只有未登记的能力才落默认值(真实能力必须逐个登记,见 TestCapabilityRegistrationConsistency)
+	if p, err := resolveParams(def, model.CapabilityPrice{Capability: "未登记的能力"}); err != nil || p.MaxTokens != defaultMaxTokens {
+		t.Fatalf("未登记能力应落默认 maxTokens,实际 %+v err=%v", p, err)
 	}
 
 	p, err = resolveParams(def, model.CapabilityPrice{Capability: "generate_field", Model: "special"})

@@ -337,3 +337,27 @@ func TestChargeFailureFinishesRequest(t *testing.T) {
 		t.Fatalf("租约应已释放,实际到期于 %v", ar.LeaseExpiresAt)
 	}
 }
+
+// 截断输出必须判无效:纯文本能力(生成字段内容)没有"解析失败"这道保险,
+// 半句话会被当成完整答案填进业务系统
+func TestTruncatedOutputRejected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"这段文案写到一半就"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":1000}}`))
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	body := `{"requestId":"22222222-2222-4222-8222-222222222222","field":{"index":0,"label":"描述","tag":"input","type":"text","name":"desc","placeholder":""},"prompt":"写个描述","row":{"名称":"甲"}}`
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/generate-field", strings.NewReader(body)))
+
+	if w.Code != 422 {
+		t.Fatalf("截断输出应 422 不扣分,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	db.Model(&model.CreditLedger{}).Count(&cnt)
+	if cnt != 0 {
+		t.Fatalf("截断输出不应扣分,实际有 %d 条流水", cnt)
+	}
+}

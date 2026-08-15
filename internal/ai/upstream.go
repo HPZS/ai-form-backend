@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -38,7 +39,10 @@ type ChatMessage struct {
 }
 
 type CallResult struct {
-	Content      string
+	Content string
+	// 输出被 maxTokens 截断(finish_reason=length)。JSON 类能力靠解析失败自保,
+	// 纯文本能力没有这道保险——半句话会被当成完整答案填进业务系统,必须显式判无效。
+	Truncated    bool
 	Upstream     string
 	Model        string
 	InputTokens  int
@@ -109,11 +113,17 @@ var capTemperature = map[string]float64{
 
 const defaultMaxTokens = 2000
 
+// 每个能力都必须登记(有 TestCapMaxTokensCoverage 把关):漏登记会静默落到默认值,
+// match_columns 就曾因此在宽表单上必然截断 JSON,重试再截断,陷入 422 死循环。
 var capMaxTokens = map[string]int{
+	"assess_page":      300,
+	"analyze_form":     500,
 	"pick_open_button": 500,
 	"pick_form":        500,
 	"suggest_profile":  500,
 	"detect_grouping":  800,
+	// 输出体量最大的能力:上限 200 字段,每条 mapping 约 30~40 token
+	"match_columns":    8000,
 	"generate_rule":    4000,
 	"generate_field":   1000,
 	"explain_failure":  1000,
@@ -191,10 +201,12 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
+	Model   string `json:"model"` // 上游实际服务的模型:聚合网关可能静默换模
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -239,8 +251,13 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 	if len(cr.Choices) == 0 {
 		return nil, fmt.Errorf("上游 %s 返回空 choices", up.Name)
 	}
+	// 上游换了模型:JSON 能力的输出质量与计量归因都会跟着变,审计字段记的是"意愿"而非事实
+	if cr.Model != "" && cr.Model != params.Model {
+		log.Printf("[AI] 上游 %s 实际服务的模型与请求不符 请求=%s 实际=%s", up.Name, params.Model, cr.Model)
+	}
 	return &CallResult{
 		Content:      cr.Choices[0].Message.Content,
+		Truncated:    cr.Choices[0].FinishReason == "length",
 		Upstream:     up.Name,
 		Model:        params.Model,
 		InputTokens:  cr.Usage.PromptTokens,

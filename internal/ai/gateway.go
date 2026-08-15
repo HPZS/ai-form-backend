@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -201,6 +202,12 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 				g.finishFailed(ar.ID, model.AIReqUpstreamError, call, promptVer, start)
 				apiErr(c, 503, "AI_UNAVAILABLE", "AI 服务暂时不可用,请稍后重试")
 				return
+			}
+			if call.Truncated {
+				// 截断的输出不是答案:JSON 会解析失败自然拦下,纯文本能力(如生成字段内容)
+				// 却会把半句话当成完整结果填进业务系统——统一按无效输出处理,不扣分
+				err = fmt.Errorf("模型输出被截断(达到 maxTokens 上限)")
+				continue
 			}
 			result, err = spec.Post(req, call.Content)
 			if err == nil {

@@ -52,7 +52,7 @@ func Specs() []Spec {
 					Enterable    bool    `json:"enterable"`
 					OpenSelector *string `json:"openSelector"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "enterable"); err != nil {
 					return nil, err
 				}
 				if out.OpenSelector != nil && !buttonExists(r.Buttons, *out.OpenSelector) {
@@ -71,7 +71,7 @@ func Specs() []Spec {
 					OpenSelector    *string `json:"openSelector"`
 					AdvanceSelector *string `json:"advanceSelector"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "submitSelector"); err != nil {
 					return nil, err
 				}
 				if out.SubmitSelector != nil && !buttonExists(r.Buttons, *out.SubmitSelector) {
@@ -102,7 +102,7 @@ func Specs() []Spec {
 				var out struct {
 					Selector *string `json:"selector"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "selector"); err != nil {
 					return nil, err
 				}
 				if out.Selector != nil && !buttonExists(r.Buttons, *out.Selector) {
@@ -119,7 +119,7 @@ func Specs() []Spec {
 				var out struct {
 					FormID *string `json:"formId"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "formId"); err != nil {
 					return nil, err
 				}
 				if out.FormID != nil {
@@ -178,11 +178,11 @@ func Specs() []Spec {
 						Column     *string `json:"column"`
 					} `json:"mapping"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "mapping"); err != nil {
 					return nil, err
 				}
 				if out.Mapping == nil {
-					return nil, fmt.Errorf("mapping 缺失")
+					return nil, fmt.Errorf("AI 输出缺少必填字段 \"mapping\"")
 				}
 				validIdx := map[int]bool{}
 				for _, f := range r.Fields {
@@ -209,7 +209,7 @@ func Specs() []Spec {
 				var out struct {
 					ProfileID *string `json:"profileId"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "profileId"); err != nil {
 					return nil, err
 				}
 				if out.ProfileID != nil {
@@ -236,7 +236,7 @@ func Specs() []Spec {
 					ParentColumns []string `json:"parentColumns"`
 					LocateColumn  *string  `json:"locateColumn"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "parentColumns"); err != nil {
 					return nil, err
 				}
 				valid := []string{}
@@ -296,7 +296,7 @@ func Specs() []Spec {
 					Fix       string `json:"fix"`
 					FixFields []int  `json:"fixFields"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "explain"); err != nil {
 					return nil, err
 				}
 				out.Explain = strings.TrimSpace(out.Explain)
@@ -327,7 +327,7 @@ func Specs() []Spec {
 					Brief     string `json:"brief"`
 					Systemic  bool   `json:"systemic"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "retryable", "systemic", "brief"); err != nil {
 					return nil, err
 				}
 				return map[string]any{
@@ -348,7 +348,7 @@ func Specs() []Spec {
 					} `json:"order"`
 					Reply string `json:"reply"`
 				}
-				if err := ParseAIJSON(content, &out); err != nil {
+				if err := ParseAIJSONStrict(content, &out, "changes", "reply"); err != nil {
 					return nil, err
 				}
 				validIdx := map[int]bool{}
