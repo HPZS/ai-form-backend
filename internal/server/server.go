@@ -29,6 +29,19 @@ import (
 
 const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 
+// internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
+// 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
+func internalErr(c *gin.Context, where string, err error) {
+	log.Printf("[HTTP-500] %s user=%d path=%s err=%v", where, c.GetInt64("userID"), c.Request.URL.Path, err)
+	c.JSON(500, gin.H{"error": "INTERNAL"})
+}
+
+// abortInternalErr 中间件里的 500 出口(需要中断后续处理器)。
+func abortInternalErr(c *gin.Context, where string, err error) {
+	log.Printf("[HTTP-500] %s user=%d path=%s err=%v", where, c.GetInt64("userID"), c.Request.URL.Path, err)
+	c.AbortWithStatusJSON(500, gin.H{"error": "INTERNAL"})
+}
+
 type Server struct {
 	db      *gorm.DB
 	cfg     *config.Config
@@ -206,7 +219,7 @@ func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 		}
 		hasBase, err := hasActiveBase(s.db, c.GetInt64("userID"))
 		if err != nil {
-			c.AbortWithStatusJSON(500, gin.H{"error": "INTERNAL"})
+			abortInternalErr(c, "AI 限流查订阅底座", err)
 			return
 		}
 		if !hasBase && !s.limiter.Allow("ai-day-trial:"+key, aiTrialPerDay, 24*time.Hour) {
@@ -244,7 +257,7 @@ func (s *Server) sendCode(c *gin.Context) {
 			c.JSON(429, gin.H{"error": "RATE_LIMITED", "message": err.Error()})
 			return
 		}
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "签发邮箱验证码", err)
 		return
 	}
 	if s.mailer.Configured() {
@@ -284,7 +297,7 @@ func (s *Server) login(c *gin.Context) {
 			c.JSON(403, gin.H{"error": "BANNED"})
 			return
 		}
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "验证码登录", err)
 		return
 	}
 	c.JSON(200, gin.H{
@@ -322,7 +335,7 @@ func (s *Server) loginPassword(c *gin.Context) {
 		case errors.Is(err, auth.ErrUserBanned):
 			c.JSON(403, gin.H{"error": "BANNED"})
 		default:
-			c.JSON(500, gin.H{"error": "INTERNAL"})
+			internalErr(c, "密码登录", err)
 		}
 		return
 	}
@@ -348,7 +361,7 @@ func (s *Server) setPassword(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "WEAK_PASSWORD", "message": err.Error()})
 			return
 		}
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "设置密码", err)
 		return
 	}
 	c.Status(204)
@@ -363,7 +376,7 @@ func (s *Server) ssoCode(c *gin.Context) {
 	}
 	code, err := s.auth.IssueSsoCode(userID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "签发 SSO 码", err)
 		return
 	}
 	c.JSON(200, gin.H{"code": code, "expiresIn": 60, "consoleUrl": s.cfg.ConsoleAddr})
@@ -424,7 +437,7 @@ func (s *Server) logout(c *gin.Context) {
 		return
 	}
 	if err := s.auth.Logout(req.RefreshToken); err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "登出", err)
 		return
 	}
 	c.Status(204)
@@ -436,7 +449,7 @@ func (s *Server) me(c *gin.Context) {
 	userID := c.GetInt64("userID")
 	avail, err := credits.Available(s.db, userID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "查可用余额", err)
 		return
 	}
 	var subs []model.UserSubscription
@@ -467,7 +480,7 @@ func (s *Server) ledger(c *gin.Context) {
 	}
 	var rows []model.CreditLedger
 	if err := q.Find(&rows).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "查积分流水", err)
 		return
 	}
 	c.JSON(200, gin.H{"entries": rows})
@@ -499,7 +512,7 @@ func (s *Server) estimate(c *gin.Context) {
 		req.AICells*s.capPrice("generate_field")
 	avail, err := credits.Available(s.db, c.GetInt64("userID"))
 	if err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "预估任务积分", err)
 		return
 	}
 	c.JSON(200, gin.H{"estimated": estimated, "available": avail})
@@ -522,7 +535,7 @@ func (s *Server) createHold(c *gin.Context) {
 			c.JSON(402, gin.H{"error": "INSUFFICIENT_CREDITS"})
 			return
 		}
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "创建预占", err)
 		return
 	}
 	c.JSON(200, gin.H{"holdId": hold.ID, "expiresAt": hold.ExpiresAt})
@@ -539,7 +552,7 @@ func (s *Server) heartbeat(c *gin.Context) {
 
 func (s *Server) settleHold(c *gin.Context) {
 	if err := credits.Settle(s.db, c.GetInt64("userID"), c.Param("id")); err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "结算预占", err)
 		return
 	}
 	c.Status(204)
@@ -587,7 +600,7 @@ func (s *Server) taskReport(c *gin.Context) {
 		}),
 	}).Create(&m).Error
 	if err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "上报任务统计", err)
 		return
 	}
 	c.Status(204)
@@ -598,7 +611,7 @@ func (s *Server) taskReport(c *gin.Context) {
 func (s *Server) plans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := s.db.Where("for_sale = ?", true).Order("sort_order asc").Find(&plans).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "查在售套餐", err)
 		return
 	}
 	out := make([]gin.H, 0, len(plans))
@@ -616,7 +629,7 @@ func (s *Server) plans(c *gin.Context) {
 func (s *Server) adminListPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := s.db.Order("sort_order asc").Find(&plans).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查套餐", err)
 		return
 	}
 	c.JSON(200, gin.H{"plans": plans})
@@ -656,7 +669,7 @@ func (s *Server) adminCreatePlan(c *gin.Context) {
 		DurationDays: req.DurationDays, ForSale: forSale, SortOrder: req.SortOrder,
 	}
 	if err := s.db.Create(&p).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台建套餐", err)
 		return
 	}
 	c.JSON(200, gin.H{"plan": p})
@@ -697,7 +710,11 @@ func (s *Server) adminUpdatePlan(c *gin.Context) {
 		return
 	}
 	r := s.db.Model(&model.SubscriptionPlan{}).Where("id = ?", c.Param("id")).Updates(updates)
-	if r.Error != nil || r.RowsAffected == 0 {
+	if r.Error != nil {
+		internalErr(c, "管理台改套餐", r.Error)
+		return
+	}
+	if r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "PLAN_NOT_FOUND"})
 		return
 	}
@@ -709,7 +726,7 @@ func (s *Server) adminUpdatePlan(c *gin.Context) {
 func (s *Server) adminGetAIDefaults(c *gin.Context) {
 	var def model.AIDefault
 	if err := s.db.First(&def, 1).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查 AI 默认参数", err)
 		return
 	}
 	c.JSON(200, gin.H{"model": def.Model})
@@ -732,7 +749,7 @@ func (s *Server) adminUpdateAIDefaults(c *gin.Context) {
 	err := s.db.Model(&model.AIDefault{}).Where("id = 1").
 		Update("model", strings.TrimSpace(req.Model)).Error
 	if err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台改默认模型", err)
 		return
 	}
 	c.Status(204)
@@ -742,7 +759,7 @@ func (s *Server) adminUpdateAIDefaults(c *gin.Context) {
 func (s *Server) adminListPrices(c *gin.Context) {
 	var prices []model.CapabilityPrice
 	if err := s.db.Find(&prices).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查能力单价", err)
 		return
 	}
 	byKey := map[string]model.CapabilityPrice{}
@@ -785,7 +802,11 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 		Updates(map[string]any{
 			"credits": req.Credits, "enabled": req.Enabled, "model": strings.TrimSpace(req.Model),
 		})
-	if r.Error != nil || r.RowsAffected == 0 {
+	if r.Error != nil {
+		internalErr(c, "管理台改能力单价", r.Error)
+		return
+	}
+	if r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "CAPABILITY_NOT_FOUND"})
 		return
 	}
@@ -804,7 +825,7 @@ func maskKey(k string) string {
 func (s *Server) adminListUpstreams(c *gin.Context) {
 	var ups []model.AIUpstream
 	if err := s.db.Order("sort_order asc, id asc").Find(&ups).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查上游", err)
 		return
 	}
 	out := make([]gin.H, 0, len(ups))
@@ -843,7 +864,7 @@ func (s *Server) adminCreateUpstream(c *gin.Context) {
 		u.SortOrder = *req.SortOrder
 	}
 	if err := s.db.Create(&u).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台建上游", err)
 		return
 	}
 	c.JSON(200, gin.H{"id": u.ID})
@@ -880,7 +901,11 @@ func (s *Server) adminUpdateUpstream(c *gin.Context) {
 		return
 	}
 	r := s.db.Model(&model.AIUpstream{}).Where("id = ?", c.Param("id")).Updates(updates)
-	if r.Error != nil || r.RowsAffected == 0 {
+	if r.Error != nil {
+		internalErr(c, "管理台改上游", r.Error)
+		return
+	}
+	if r.RowsAffected == 0 {
 		c.JSON(404, gin.H{"error": "UPSTREAM_NOT_FOUND"})
 		return
 	}
@@ -890,7 +915,7 @@ func (s *Server) adminUpdateUpstream(c *gin.Context) {
 func (s *Server) adminDeleteUpstream(c *gin.Context) {
 	r := s.db.Delete(&model.AIUpstream{}, "id = ?", c.Param("id"))
 	if r.Error != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台删上游", r.Error)
 		return
 	}
 	if r.RowsAffected == 0 {
@@ -907,7 +932,7 @@ func (s *Server) adminListUsers(c *gin.Context) {
 		q = q.Where("id < ?", before)
 	}
 	if err := q.Find(&users).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查用户", err)
 		return
 	}
 	c.JSON(200, gin.H{"users": users})
@@ -934,7 +959,7 @@ func (s *Server) adminUpdateUser(c *gin.Context) {
 		return
 	}
 	if err := s.db.Model(&target).Update("status", req.Status).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台改用户状态", err)
 		return
 	}
 	if req.Status == "banned" {
@@ -951,7 +976,7 @@ func (s *Server) adminUpdateUser(c *gin.Context) {
 func (s *Server) adminListUserSubs(c *gin.Context) {
 	var subs []model.UserSubscription
 	if err := s.db.Where("user_id = ?", c.Param("id")).Order("id desc").Limit(100).Find(&subs).Error; err != nil {
-		c.JSON(500, gin.H{"error": "INTERNAL"})
+		internalErr(c, "管理台查用户额度桶", err)
 		return
 	}
 	planNames := map[int64]string{}

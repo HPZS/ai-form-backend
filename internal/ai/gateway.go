@@ -55,6 +55,13 @@ func apiErr(c *gin.Context, status int, code, msg string) {
 	c.JSON(status, gin.H{"error": code, "message": msg})
 }
 
+// internalErr 网关的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志,
+// 否则线上排障只剩一个状态码(守则 3.2)。
+func (g *Gateway) internalErr(c *gin.Context, requestID, capability, where string, err error) {
+	log.Printf("[AI-500] %s request_id=%s capability=%s err=%v", where, requestID, capability, err)
+	apiErr(c, 500, "INTERNAL", "内部错误")
+}
+
 // Handler 生成某能力的 gin 处理函数。
 func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -90,14 +97,14 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		}
 		ins := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&ar)
 		if ins.Error != nil {
-			apiErr(c, 500, "INTERNAL", "内部错误")
+			g.internalErr(c, meta.RequestID, spec.Name, "写幂等闸门", ins.Error)
 			return
 		}
 		if ins.RowsAffected == 0 {
 			var existing model.AIRequest
 			if err := g.db.Where("user_id = ? AND request_id = ?", userID, meta.RequestID).
 				First(&existing).Error; err != nil {
-				apiErr(c, 500, "INTERNAL", "内部错误")
+				g.internalErr(c, meta.RequestID, spec.Name, "查在途请求", err)
 				return
 			}
 			switch existing.Status {
@@ -140,7 +147,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		// 3. 订阅与余额预检(减少白付模型成本;最终扣费在同事务内仍会复核)
 		price, enabled, err := g.capabilityPrice(spec.Name)
 		if err != nil {
-			apiErr(c, 500, "INTERNAL", "内部错误")
+			g.internalErr(c, meta.RequestID, spec.Name, "查能力单价", err)
 			return
 		}
 		if !enabled {
@@ -153,7 +160,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		}
 		hasSub, err := hasActiveSubscription(g.db, userID)
 		if err != nil {
-			apiErr(c, 500, "INTERNAL", "内部错误")
+			g.internalErr(c, meta.RequestID, spec.Name, "查订阅状态", err)
 			return
 		}
 		if !hasSub {
@@ -165,7 +172,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		if price > 0 && meta.BillingGroupID != "" {
 			charged, err := g.groupAlreadyCharged(userID, meta.BillingGroupID)
 			if err != nil {
-				apiErr(c, 500, "INTERNAL", "内部错误")
+				g.internalErr(c, meta.RequestID, spec.Name, "查计费组防重", err)
 				return
 			}
 			if charged {
@@ -175,7 +182,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		if price > 0 {
 			avail, err := credits.Available(g.db, userID)
 			if err != nil {
-				apiErr(c, 500, "INTERNAL", "内部错误")
+				g.internalErr(c, meta.RequestID, spec.Name, "查可用余额", err)
 				return
 			}
 			if avail < price {
@@ -188,7 +195,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		// 4. 渲染提示词并调用上游(解析失败同链重试一次)
 		system, user, promptVer, err := g.prompts.Render(spec.Name, req)
 		if err != nil {
-			apiErr(c, 500, "INTERNAL", "提示词配置错误")
+			g.internalErr(c, meta.RequestID, spec.Name, "渲染提示词", err)
 			return
 		}
 		messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
