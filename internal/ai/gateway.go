@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -250,6 +251,13 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 				apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
 				return
 			}
+			// 模型已调用(成本已发生)但落账失败:必须留根因并把请求收尾。
+			// 卡在 pending 会让同 requestId 的重试一律 409,直到 90 秒租约到期,
+			// 而重试又会重调模型——不收尾就是一个无限白烧上游费用的循环。
+			log.Printf("[AI-ALERT] 扣费事务失败(模型已调用) request_id=%s user=%d capability=%s err=%v",
+				meta.RequestID, userID, spec.Name, txErr)
+			g.finishFailed(ar.ID, model.AIReqUpstreamError, call, promptVer, start)
+			g.releaseLease(ar.ID)
 			apiErr(c, 500, "INTERNAL", "内部错误")
 			return
 		}
@@ -259,11 +267,16 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 }
 
 // releaseLease 把 pending 租约立即置为过期,让后续同 requestId 请求可接管重跑。
+// 写失败要留痕:租约没释放会让用户莫名吃满 90 秒的 409。
 func (g *Gateway) releaseLease(id int64) {
-	g.db.Model(&model.AIRequest{}).Where("id = ?", id).
-		Update("lease_expires_at", time.Now().Add(-time.Second))
+	if err := g.db.Model(&model.AIRequest{}).Where("id = ?", id).
+		Update("lease_expires_at", time.Now().Add(-time.Second)).Error; err != nil {
+		log.Printf("[AI] 释放租约失败 ai_request_id=%d err=%v", id, err)
+	}
 }
 
+// finishFailed 落定失败状态。写失败要留痕:状态丢失会让
+// "未扣费可重跑"的判定链路断裂,请求就那么卡在 pending 上。
 func (g *Gateway) finishFailed(id int64, status string, call *CallResult, promptVer string, start time.Time) {
 	fields := map[string]any{
 		"status": status, "prompt_version": promptVer,
@@ -275,7 +288,9 @@ func (g *Gateway) finishFailed(id int64, status string, call *CallResult, prompt
 		fields["input_tokens"] = call.InputTokens
 		fields["output_tokens"] = call.OutputTokens
 	}
-	g.db.Model(&model.AIRequest{}).Where("id = ?", id).Updates(fields)
+	if err := g.db.Model(&model.AIRequest{}).Where("id = ?", id).Updates(fields).Error; err != nil {
+		log.Printf("[AI] 落定失败状态失败 ai_request_id=%d status=%s err=%v", id, status, err)
+	}
 }
 
 func (g *Gateway) capabilityPrice(capability string) (price int64, enabled bool, err error) {

@@ -307,3 +307,33 @@ func TestHallucinationFiltered(t *testing.T) {
 		t.Fatalf("幻觉映射应全被过滤: %s", w.Body.String())
 	}
 }
+
+// 扣费事务通用失败(DB 故障等):必须落状态、释租约、留根因。
+// 否则请求卡 pending 90 秒(同 requestId 一律 409),而模型已经调过、成本已经发生——
+// 插件重试→再调模型→再失败,就成了无限白烧上游费用的循环。
+func TestChargeFailureFinishesRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`)))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	// 制造扣费事务内的通用故障:流水表没了,Charge 必然报错(非余额不足、非无订阅)
+	if err := db.Exec(`DROP TABLE credit_ledgers`).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 500 {
+		t.Fatalf("扣费事务失败应 500,实际 %d: %s", w.Code, w.Body.String())
+	}
+
+	var ar model.AIRequest
+	if err := db.First(&ar, "request_id = ?", "11111111-1111-4111-8111-111111111111").Error; err != nil {
+		t.Fatal(err)
+	}
+	if ar.Status == model.AIReqPending {
+		t.Fatal("扣费失败后不应仍是 pending:会卡满整个租约期,同 requestId 重试一律 409")
+	}
+	if ar.LeaseExpiresAt.After(time.Now()) {
+		t.Fatalf("租约应已释放,实际到期于 %v", ar.LeaseExpiresAt)
+	}
+}
