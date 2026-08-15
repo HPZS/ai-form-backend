@@ -157,6 +157,56 @@ func TestInvalidOutputNoCharge(t *testing.T) {
 	}
 }
 
+// 解析失败重试后,被丢弃的那次调用一样烧了上游 token:
+// 只记最后一次会让成本核算凭空少一半,单价复盘与幻觉率分母全跟着错
+func TestRetryTokensAccumulated(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&hits, 1)
+		if n == 1 {
+			chatOK("这不是 JSON")(w, r) // 第一次废掉,触发同链重试
+		} else {
+			chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`)(w, r)
+		}
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 200 {
+		t.Fatalf("重试后应成功,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var ar model.AIRequest
+	if err := db.First(&ar, "request_id = ?", "11111111-1111-4111-8111-111111111111").Error; err != nil {
+		t.Fatal(err)
+	}
+	// chatOK 每次固定 10 输入 / 5 输出,两次调用应记 20 / 10
+	if ar.InputTokens != 20 || ar.OutputTokens != 10 {
+		t.Fatalf("两次调用的 token 都要计入,期望 20/10,实际 %d/%d", ar.InputTokens, ar.OutputTokens)
+	}
+}
+
+// 两次都解析失败(422 不扣分)时,已经发生的 token 成本同样要记全
+func TestFailedRetryTokensAccumulated(t *testing.T) {
+	upstream := httptest.NewServer(chatOK("这不是 JSON"))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 422 {
+		t.Fatalf("应 422,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var ar model.AIRequest
+	if err := db.First(&ar, "request_id = ?", "11111111-1111-4111-8111-111111111111").Error; err != nil {
+		t.Fatal(err)
+	}
+	if ar.InputTokens != 20 || ar.OutputTokens != 10 {
+		t.Fatalf("失败路径也要记全成本,期望 20/10,实际 %d/%d", ar.InputTokens, ar.OutputTokens)
+	}
+}
+
 // 方案费防重:同一表单×同一列集(不同 requestId)只扣一次——计费键由服务端派生,不依赖客户端
 func TestPlanFeeChargedOncePerScheme(t *testing.T) {
 	upstream := httptest.NewServer(chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`))

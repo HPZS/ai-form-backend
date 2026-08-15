@@ -219,10 +219,18 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 
 		var result any
 		var call *CallResult
+		// usage 累计本次请求真实发生的上游成本:解析失败重试时,被丢弃的那一次一样烧了 token。
+		// 只记最后一次会让计量凭空少一半,单价复盘与成本核算全跟着错。
+		var usage CallResult
 		for attempt := 0; attempt < 2; attempt++ {
 			call, err = g.caller.Call(ctx, spec.Name, messages)
+			if call != nil {
+				usage.InputTokens += call.InputTokens
+				usage.OutputTokens += call.OutputTokens
+				usage.Upstream, usage.Model = call.Upstream, call.Model
+			}
 			if err != nil {
-				g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, call, promptVer, start)
+				g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, usage, promptVer, start)
 				apiErr(c, 503, "AI_UNAVAILABLE", "AI 服务暂时不可用,请稍后重试")
 				return
 			}
@@ -238,7 +246,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			}
 		}
 		if err != nil {
-			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, call, promptVer, start)
+			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, usage, promptVer, start)
 			apiErr(c, 422, "AI_OUTPUT_INVALID", "AI 输出不符合预期,本次不扣积分")
 			return
 		}
@@ -265,9 +273,9 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			claim := tx.Model(&model.AIRequest{}).
 				Where("id = ? AND status = ? AND lease_token = ?", ar.ID, model.AIReqPending, leaseToken).
 				Updates(map[string]any{
-					"status": model.AIReqOK, "upstream": call.Upstream, "model": call.Model,
+					"status": model.AIReqOK, "upstream": usage.Upstream, "model": usage.Model,
 					"prompt_version": promptVer, "schema_version": "v1",
-					"input_tokens": call.InputTokens, "output_tokens": call.OutputTokens,
+					"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 					"credits": chargeRes.Charged, "latency_ms": int(time.Since(start).Milliseconds()),
 					"response_cache": string(body),
 				})
@@ -305,7 +313,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			// 而重试又会重调模型——不收尾就是一个无限白烧上游费用的循环。
 			log.Printf("[AI-ALERT] 扣费事务失败(模型已调用) request_id=%s user=%d capability=%s err=%v",
 				meta.RequestID, userID, spec.Name, txErr)
-			g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, call, promptVer, start)
+			g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, usage, promptVer, start)
 			g.releaseLease(ar.ID, leaseToken)
 			apiErr(c, 500, "INTERNAL", "内部错误")
 			return
@@ -326,18 +334,15 @@ func (g *Gateway) releaseLease(id int64, leaseToken string) {
 	}
 }
 
-// finishFailed 落定失败状态。写失败要留痕:状态丢失会让
-// "未扣费可重跑"的判定链路断裂,请求就那么卡在 pending 上。
-func (g *Gateway) finishFailed(id int64, leaseToken, status string, call *CallResult, promptVer string, start time.Time) {
+// finishFailed 落定失败状态,并记下已经发生的上游成本(失败不扣积分,但 token 是真烧了)。
+// 写失败要留痕:状态丢失会让"未扣费可重跑"的判定链路断裂,请求就那么卡在 pending 上。
+func (g *Gateway) finishFailed(id int64, leaseToken, status string, usage CallResult, promptVer string, start time.Time) {
 	fields := map[string]any{
 		"status": status, "prompt_version": promptVer,
-		"latency_ms": int(time.Since(start).Milliseconds()),
-	}
-	if call != nil {
-		fields["upstream"] = call.Upstream
-		fields["model"] = call.Model
-		fields["input_tokens"] = call.InputTokens
-		fields["output_tokens"] = call.OutputTokens
+		"latency_ms":   int(time.Since(start).Milliseconds()),
+		"upstream":     usage.Upstream,
+		"model":        usage.Model,
+		"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 	}
 	// 租约已易主时不落定:那一行归接管者,改它会把接管者的结果覆盖掉
 	if err := g.db.Model(&model.AIRequest{}).
