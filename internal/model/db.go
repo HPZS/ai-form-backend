@@ -3,6 +3,7 @@ package model
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
@@ -29,9 +30,17 @@ func Open(dsn string) (*gorm.DB, error) {
 	return db, nil
 }
 
+// memDBSeq 给每次 OpenMemory 生成独立库名,测试之间互不可见。
+var memDBSeq atomic.Int64
+
 // OpenMemory 内存 sqlite,单元测试用。
+//
+// 必须用具名 + cache=shared 的 DSN:裸 ":memory:" 下每条连接都是一个**独立的空库**,
+// 而 GORM 连接池会在并发查询时开第二条连接——迁移建的表在它上面根本不存在,
+// 测试随机报 "no such table"(并发路径的用例首当其冲)。
 func OpenMemory() (*gorm.DB, error) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	dsn := fmt.Sprintf("file:memdb%d?mode=memory&cache=shared", memDBSeq.Add(1))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, err
 	}
