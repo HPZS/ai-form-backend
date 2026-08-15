@@ -79,11 +79,22 @@ func (m *Mailer) connect(addr string) (*smtp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(tlsCfg); err != nil {
-			c.Close()
-			return nil, err
-		}
+	// 显式握手:Extension() 会把 EHLO 的错误吞掉,那样"不支持 STARTTLS"与
+	// "握手就没成功"会被报成同一件事
+	if err := c.Hello("localhost"); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("SMTP 握手失败: %w", err)
+	}
+	if ok, _ := c.Extension("STARTTLS"); !ok {
+		// 静默走明文 = 把账号口令与整封邮件裸发到网上,而且没人会知道。
+		// 宁可发不出去也不能悄悄降级(守则:禁止静默降级)。
+		c.Close()
+		return nil, fmt.Errorf("SMTP 服务器 %s:%d 不支持 STARTTLS,拒绝以明文发送;请改用 465 端口的 SSL 直连(SMTP_SSL=true)",
+			m.cfg.Server, m.cfg.Port)
+	}
+	if err := c.StartTLS(tlsCfg); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("STARTTLS 升级失败: %w", err)
 	}
 	return c, nil
 }
