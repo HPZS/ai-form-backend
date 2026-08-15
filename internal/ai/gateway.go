@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -25,7 +26,13 @@ import (
 const (
 	leaseTTL     = 90 * time.Second
 	maxBodyBytes = 256 << 10
+	// 整条调用链(含重试与上游切换)的总时限,必须短于租约:
+	// 否则请求还在跑、租约已被别人接管,白白多调一次模型
+	callChainTimeout = 80 * time.Second
 )
+
+// errLeaseLost 落账时发现租约已被接管:本次结果作废(事务回滚,未扣费)。
+var errLeaseLost = errors.New("租约已易主")
 
 type Spec struct {
 	Name   string
@@ -82,18 +89,24 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		meta := req.GetMeta()
+		// 计费组一律由服务端从请求内容派生,绝不采信客户端声明:
+		// 用户从自己的流水接口就能读到历史已扣费的 group id,回放它即可白嫖模型调用。
+		// 没有派生规则的能力直接清空,免得客户端塞的值意外参与防重判定。
+		meta.BillingGroupID = ""
 		if spec.BillingGroup != nil {
-			if g := spec.BillingGroup(userID, req); g != "" {
-				meta.BillingGroupID = g // 服务端派生,覆盖客户端声明
-			}
+			meta.BillingGroupID = spec.BillingGroup(userID, req)
 		}
 
 		// 2. 幂等闸门
 		now := time.Now()
+		// 租约凭证:落账时凭它确认"我仍是这个请求的持有者"。租约到期被接管后,
+		// 原请求即使跑完也不得落账——否则二次扣费并覆盖接管者的结果。
+		leaseToken := uuid.NewString()
 		ar := model.AIRequest{
 			UserID: userID, RequestID: meta.RequestID, TaskID: meta.TaskID,
 			BillingGroupID: meta.BillingGroupID, Capability: spec.Name,
-			Status: model.AIReqPending, LeaseExpiresAt: now.Add(leaseTTL), CreatedAt: now,
+			Status: model.AIReqPending, LeaseExpiresAt: now.Add(leaseTTL),
+			LeaseToken: leaseToken, CreatedAt: now,
 		}
 		ins := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&ar)
 		if ins.Error != nil {
@@ -124,7 +137,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 				// 租约过期:原子抢占接管
 				r := g.db.Model(&model.AIRequest{}).
 					Where("id = ? AND status = ? AND lease_expires_at < ?", existing.ID, model.AIReqPending, now).
-					Update("lease_expires_at", now.Add(leaseTTL))
+					Updates(map[string]any{"lease_expires_at": now.Add(leaseTTL), "lease_token": leaseToken})
 				if r.Error != nil || r.RowsAffected == 0 {
 					c.Header("Retry-After", "3")
 					apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
@@ -134,7 +147,9 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			default: // ai_invalid / upstream_error:未扣费,允许原地重跑
 				r := g.db.Model(&model.AIRequest{}).
 					Where("id = ? AND status = ?", existing.ID, existing.Status).
-					Updates(map[string]any{"status": model.AIReqPending, "lease_expires_at": now.Add(leaseTTL)})
+					Updates(map[string]any{
+						"status": model.AIReqPending, "lease_expires_at": now.Add(leaseTTL), "lease_token": leaseToken,
+					})
 				if r.Error != nil || r.RowsAffected == 0 {
 					c.Header("Retry-After", "3")
 					apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
@@ -151,7 +166,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		if !enabled {
-			g.releaseLease(ar.ID)
+			g.releaseLease(ar.ID, leaseToken)
 			apiErr(c, 403, "CAPABILITY_DISABLED", "该能力已停用")
 			return
 		}
@@ -164,7 +179,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		if !hasSub {
-			g.releaseLease(ar.ID)
+			g.releaseLease(ar.ID, leaseToken)
 			apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
 			return
 		}
@@ -186,7 +201,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 				return
 			}
 			if avail < price {
-				g.releaseLease(ar.ID)
+				g.releaseLease(ar.ID, leaseToken)
 				c.JSON(402, gin.H{"error": "INSUFFICIENT_CREDITS", "available": avail, "required": price})
 				return
 			}
@@ -199,14 +214,15 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), callChainTimeout)
+		defer cancel()
 
 		var result any
 		var call *CallResult
 		for attempt := 0; attempt < 2; attempt++ {
 			call, err = g.caller.Call(ctx, spec.Name, messages)
 			if err != nil {
-				g.finishFailed(ar.ID, model.AIReqUpstreamError, call, promptVer, start)
+				g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, call, promptVer, start)
 				apiErr(c, 503, "AI_UNAVAILABLE", "AI 服务暂时不可用,请稍后重试")
 				return
 			}
@@ -222,7 +238,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			}
 		}
 		if err != nil {
-			g.finishFailed(ar.ID, model.AIReqInvalid, call, promptVer, start)
+			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, call, promptVer, start)
 			apiErr(c, 422, "AI_OUTPUT_INVALID", "AI 输出不符合预期,本次不扣积分")
 			return
 		}
@@ -245,23 +261,42 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			if merr != nil {
 				return merr
 			}
-			return tx.Model(&model.AIRequest{}).Where("id = ?", ar.ID).Updates(map[string]any{
-				"status": model.AIReqOK, "upstream": call.Upstream, "model": call.Model,
-				"prompt_version": promptVer, "schema_version": "v1",
-				"input_tokens": call.InputTokens, "output_tokens": call.OutputTokens,
-				"credits": chargeRes.Charged, "latency_ms": int(time.Since(start).Milliseconds()),
-				"response_cache": string(body),
-			}).Error
+			// 落账守卫:只有仍持有租约的请求能落账(RowsAffected==0 = 租约已易主)
+			claim := tx.Model(&model.AIRequest{}).
+				Where("id = ? AND status = ? AND lease_token = ?", ar.ID, model.AIReqPending, leaseToken).
+				Updates(map[string]any{
+					"status": model.AIReqOK, "upstream": call.Upstream, "model": call.Model,
+					"prompt_version": promptVer, "schema_version": "v1",
+					"input_tokens": call.InputTokens, "output_tokens": call.OutputTokens,
+					"credits": chargeRes.Charged, "latency_ms": int(time.Since(start).Milliseconds()),
+					"response_cache": string(body),
+				})
+			if claim.Error != nil {
+				return claim.Error
+			}
+			if claim.RowsAffected == 0 {
+				return errLeaseLost
+			}
+			return nil
 		})
 		if txErr != nil {
+			if errors.Is(txErr, errLeaseLost) {
+				// 租约在处理期间被接管:接管者已经(或正在)给出结果,本次结果整个作废。
+				// 事务回滚保证没有扣费,状态与缓存都归接管者写。
+				log.Printf("[AI] 租约已易主,丢弃本次结果 request_id=%s user=%d capability=%s",
+					meta.RequestID, userID, spec.Name)
+				c.Header("Retry-After", "3")
+				apiErr(c, 409, "REQUEST_IN_FLIGHT", "同一请求正在处理")
+				return
+			}
 			if errors.Is(txErr, credits.ErrInsufficient) {
-				g.releaseLease(ar.ID) // 未扣费,购买后可原 requestId 重试(会重调模型)
+				g.releaseLease(ar.ID, leaseToken) // 未扣费,购买后可原 requestId 重试(会重调模型)
 				avail, _ := credits.Available(g.db, userID)
 				c.JSON(402, gin.H{"error": "INSUFFICIENT_CREDITS", "available": avail, "required": price})
 				return
 			}
 			if errors.Is(txErr, credits.ErrNoActiveSub) {
-				g.releaseLease(ar.ID)
+				g.releaseLease(ar.ID, leaseToken)
 				apiErr(c, 403, "NO_ACTIVE_SUBSCRIPTION", "没有有效的订阅,请先开通")
 				return
 			}
@@ -270,8 +305,8 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			// 而重试又会重调模型——不收尾就是一个无限白烧上游费用的循环。
 			log.Printf("[AI-ALERT] 扣费事务失败(模型已调用) request_id=%s user=%d capability=%s err=%v",
 				meta.RequestID, userID, spec.Name, txErr)
-			g.finishFailed(ar.ID, model.AIReqUpstreamError, call, promptVer, start)
-			g.releaseLease(ar.ID)
+			g.finishFailed(ar.ID, leaseToken, model.AIReqUpstreamError, call, promptVer, start)
+			g.releaseLease(ar.ID, leaseToken)
 			apiErr(c, 500, "INTERNAL", "内部错误")
 			return
 		}
@@ -281,9 +316,11 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 }
 
 // releaseLease 把 pending 租约立即置为过期,让后续同 requestId 请求可接管重跑。
+// 同样受租约凭证守卫:租约已易主时不能去动接管者的行。
 // 写失败要留痕:租约没释放会让用户莫名吃满 90 秒的 409。
-func (g *Gateway) releaseLease(id int64) {
-	if err := g.db.Model(&model.AIRequest{}).Where("id = ?", id).
+func (g *Gateway) releaseLease(id int64, leaseToken string) {
+	if err := g.db.Model(&model.AIRequest{}).
+		Where("id = ? AND lease_token = ?", id, leaseToken).
 		Update("lease_expires_at", time.Now().Add(-time.Second)).Error; err != nil {
 		log.Printf("[AI] 释放租约失败 ai_request_id=%d err=%v", id, err)
 	}
@@ -291,7 +328,7 @@ func (g *Gateway) releaseLease(id int64) {
 
 // finishFailed 落定失败状态。写失败要留痕:状态丢失会让
 // "未扣费可重跑"的判定链路断裂,请求就那么卡在 pending 上。
-func (g *Gateway) finishFailed(id int64, status string, call *CallResult, promptVer string, start time.Time) {
+func (g *Gateway) finishFailed(id int64, leaseToken, status string, call *CallResult, promptVer string, start time.Time) {
 	fields := map[string]any{
 		"status": status, "prompt_version": promptVer,
 		"latency_ms": int(time.Since(start).Milliseconds()),
@@ -302,7 +339,10 @@ func (g *Gateway) finishFailed(id int64, status string, call *CallResult, prompt
 		fields["input_tokens"] = call.InputTokens
 		fields["output_tokens"] = call.OutputTokens
 	}
-	if err := g.db.Model(&model.AIRequest{}).Where("id = ?", id).Updates(fields).Error; err != nil {
+	// 租约已易主时不落定:那一行归接管者,改它会把接管者的结果覆盖掉
+	if err := g.db.Model(&model.AIRequest{}).
+		Where("id = ? AND lease_token = ?", id, leaseToken).
+		Updates(fields).Error; err != nil {
 		log.Printf("[AI] 落定失败状态失败 ai_request_id=%d status=%s err=%v", id, status, err)
 	}
 }

@@ -46,7 +46,8 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 	dir := t.TempDir()
 	writePrompt(t, dir, "match_columns")
 	writePrompt(t, dir, "generate_field")
-	prompts, err := LoadPrompts(dir, []string{"match_columns", "generate_field"})
+	writePrompt(t, dir, "analyze_form")
+	prompts, err := LoadPrompts(dir, []string{"match_columns", "generate_field", "analyze_form"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 
 	r := gin.New()
 	for _, sp := range Specs() {
-		if sp.Name == "match_columns" || sp.Name == "generate_field" {
+		if sp.Name == "match_columns" || sp.Name == "generate_field" || sp.Name == "analyze_form" {
 			r.POST("/ai/"+strings.ReplaceAll(sp.Name, "_", "-"), func(c *gin.Context) {
 				c.Set("userID", u.ID)
 				c.Next()
@@ -359,5 +360,82 @@ func TestTruncatedOutputRejected(t *testing.T) {
 	db.Model(&model.CreditLedger{}).Count(&cnt)
 	if cnt != 0 {
 		t.Fatalf("截断输出不应扣分,实际有 %d 条流水", cnt)
+	}
+}
+
+// 租约被接管后,原请求跑完也不得落账:否则会二次扣费并覆盖接管者的结果。
+// 当前两个计费能力恰好都有计费组防重掩护,但任何无计费组的能力一旦定价,双扣即成立。
+func TestStaleLeaseCannotSettle(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // 卡住首个请求,模拟"跑得比租约还久"
+		chatOK(`{"content":"甲"}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	const body = `{"requestId":"33333333-3333-4333-8333-333333333333","field":{"index":0,"label":"描述","tag":"input","type":"text","name":"d","placeholder":""},"prompt":"写","row":{"名称":"甲"}}`
+	done := make(chan int)
+	go func() {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/generate-field", strings.NewReader(body)))
+		done <- w.Code
+	}()
+
+	// 等首个请求把 pending 行写进去,然后模拟"租约到期被另一请求接管":换掉租约凭证
+	var ar model.AIRequest
+	for i := 0; i < 100; i++ {
+		if err := db.First(&ar, "request_id = ?", "33333333-3333-4333-8333-333333333333").Error; err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ar.ID == 0 {
+		t.Fatal("首个请求应已写入 pending 行")
+	}
+	if err := db.Model(&model.AIRequest{}).Where("id = ?", ar.ID).
+		Update("lease_token", "接管者的新凭证").Error; err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	if code := <-done; code != 409 && code != 500 {
+		t.Fatalf("租约已被接管,原请求不应落账成功,实际 %d", code)
+	}
+	var cnt int64
+	db.Model(&model.CreditLedger{}).Count(&cnt)
+	if cnt != 0 {
+		t.Fatalf("租约已易主,原请求不得扣费,实际有 %d 条流水", cnt)
+	}
+	db.First(&ar, ar.ID)
+	if ar.Status == model.AIReqOK {
+		t.Fatal("租约已易主,原请求不得把状态落成 ok(会覆盖接管者的结果)")
+	}
+}
+
+// 无派生规则的能力必须忽略客户端自报的 billingGroupId:
+// 用户能从自己的流水里读到历史已扣费的 group id,回放它就能白嫖模型调用
+func TestClientBillingGroupIgnored(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(chatOK(`{"submitSelector":null,"openSelector":null,"advanceSelector":null}`)))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+	db.Create(&model.CapabilityPrice{Capability: "analyze_form", Credits: 3, Enabled: true})
+	// 伪造一条"该组已收过费"的锚点:若网关采信客户端声明,本次就会被判免单
+	db.Create(&model.BillingGroupCharge{UserID: uid, BillingGroupID: "偷来的组", Capability: "x", Price: 3})
+
+	body := `{"requestId":"44444444-4444-4444-8444-444444444444","billingGroupId":"偷来的组","fields":[],"buttons":[{"selector":"#s","text":"保存"}],"outerButtons":[]}`
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/analyze-form", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("应正常处理,实际 %d: %s", w.Code, w.Body.String())
+	}
+
+	var ar model.AIRequest
+	db.First(&ar, "request_id = ?", "44444444-4444-4444-8444-444444444444")
+	if ar.BillingGroupID != "" {
+		t.Fatalf("无派生规则的能力应清空计费组,实际 %q", ar.BillingGroupID)
+	}
+	if ar.Credits != 3 {
+		t.Fatalf("应照常扣费 3,实际 %d(客户端自报的计费组骗到了免单)", ar.Credits)
 	}
 }

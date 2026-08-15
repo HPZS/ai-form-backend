@@ -230,7 +230,10 @@ type AIRequest struct {
 	Credits        int64
 	Status         string `gorm:"size:16;not null;default:pending"`
 	LeaseExpiresAt time.Time
-	LatencyMs      int
+	// LeaseToken 租约归属凭证:租约到期被别的请求接管后,原请求即使跑完也不得落账
+	// (否则会二次扣费并覆盖接管者的结果)。每次取得/抢占租约都换新值。
+	LeaseToken string `gorm:"size:36"`
+	LatencyMs  int
 	ResponseCache  string `gorm:"type:text"` // 幂等重放用,定时清除
 	CreatedAt      time.Time `gorm:"index"`
 }
