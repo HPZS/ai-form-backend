@@ -4,10 +4,13 @@
 package payment
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Calcium-Ion/go-epay/epay"
@@ -94,11 +97,22 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		Status: model.OrderStatusPending, CreatedAt: time.Now(),
 	}
 	if err := h.db.Create(&order).Error; err != nil {
+		log.Printf("[PAY] 创建订单失败 user=%d plan=%d err=%v", userID, plan.ID, err)
 		c.JSON(500, gin.H{"error": "INTERNAL", "message": "创建订单失败"})
 		return
 	}
-	notifyURL, _ := url.Parse(h.callbackAddr + "/v1/subscription/epay/notify")
-	returnURL, _ := url.Parse(h.callbackAddr + "/v1/subscription/epay/return")
+	notifyURL, err := url.Parse(h.callbackAddr + "/v1/subscription/epay/notify")
+	if err != nil {
+		log.Printf("[PAY] 回调地址配置错误 callbackAddr=%q err=%v", h.callbackAddr, err)
+		c.JSON(500, gin.H{"error": "INTERNAL", "message": "回调地址配置错误"})
+		return
+	}
+	returnURL, err := url.Parse(h.callbackAddr + "/v1/subscription/epay/return")
+	if err != nil {
+		log.Printf("[PAY] 同步返回地址配置错误 callbackAddr=%q err=%v", h.callbackAddr, err)
+		c.JSON(500, gin.H{"error": "INTERNAL", "message": "回调地址配置错误"})
+		return
+	}
 	uri, params, err := client.Purchase(&epay.PurchaseArgs{
 		Type:           req.Method,
 		ServiceTradeNo: tradeNo,
@@ -109,9 +123,13 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		ReturnUrl:      returnURL,
 	})
 	if err != nil {
-		h.db.Model(&model.PaymentOrder{}).
+		log.Printf("[PAY] 拉起支付失败 trade_no=%s user=%d err=%v", tradeNo, userID, err)
+		if e := h.db.Model(&model.PaymentOrder{}).
 			Where("id = ? AND status = ?", order.ID, model.OrderStatusPending).
-			Update("status", model.OrderStatusExpired)
+			Update("status", model.OrderStatusExpired).Error; e != nil {
+			// 作废失败会留下永不回收的 pending 订单,必须能查到
+			log.Printf("[PAY] 作废未拉起的订单失败 trade_no=%s err=%v", tradeNo, e)
+		}
 		c.JSON(502, gin.H{"error": "PAYMENT_GATEWAY_ERROR", "message": "拉起支付失败"})
 		return
 	}
@@ -135,31 +153,94 @@ func collectParams(c *gin.Context) map[string]string {
 	return params
 }
 
+// parseCents 把 "9.90"/"9.9"/"10" 精确解析为分。
+// 不走 float:浮点换算在边界与负值上取整方向会错,支付金额比对不容许这种模糊。
+func parseCents(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "-") {
+		return 0, fmt.Errorf("金额非法: %q", s)
+	}
+	intPart, fracPart, _ := strings.Cut(s, ".")
+	if len(fracPart) > 2 {
+		return 0, fmt.Errorf("金额精度超过分: %q", s)
+	}
+	yuan, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("金额非法: %q", s)
+	}
+	cents := int64(0)
+	if fracPart != "" {
+		f, err := strconv.ParseInt(fracPart, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("金额非法: %q", s)
+		}
+		if len(fracPart) == 1 {
+			f *= 10
+		}
+		cents = f
+	}
+	return yuan*100 + cents, nil
+}
+
 // verifyAndComplete 验签 + 幂等落账,成功返回 true。
+// 这是真金白银的路径:每条拒付原因都必须留痕——用户付了钱没到账时,
+// 运营方要能凭日志区分"回调没来 / 验签失败 / 金额被篡改 / 库挂了",不能只看到一个 fail。
 func (h *Handler) verifyAndComplete(c *gin.Context) bool {
 	params := collectParams(c)
 	if len(params) == 0 {
+		log.Printf("[PAY] 回调无参数 method=%s", c.Request.Method)
 		return false
 	}
+	tradeNo := params["out_trade_no"]
 	client := h.client()
 	if client == nil {
+		log.Printf("[PAY] 收到回调但支付未配置 trade_no=%s", tradeNo)
 		return false
 	}
 	info, err := client.Verify(params)
-	if err != nil || !info.VerifyStatus || info.TradeStatus != epay.StatusTradeSuccess {
+	if err != nil {
+		log.Printf("[PAY] 回调解析失败 trade_no=%s err=%v", tradeNo, err)
+		return false
+	}
+	if !info.VerifyStatus {
+		// 验签不过 = 密钥不符或伪造回调,两者都要人来看
+		log.Printf("[PAY-ALERT] 回调验签失败 trade_no=%s pid=%s", tradeNo, params["pid"])
+		return false
+	}
+	if info.TradeStatus != epay.StatusTradeSuccess {
+		log.Printf("[PAY] 回调交易状态非成功 trade_no=%s status=%s", tradeNo, info.TradeStatus)
 		return false
 	}
 	// 金额一致性校验:回调金额必须等于订单金额
 	var order model.PaymentOrder
 	if err := h.db.Where("trade_no = ?", info.ServiceTradeNo).First(&order).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("[PAY-ALERT] 回调指向不存在的订单 trade_no=%s", info.ServiceTradeNo)
+		} else {
+			log.Printf("[PAY] 回调查订单失败 trade_no=%s err=%v", info.ServiceTradeNo, err)
+		}
 		return false
 	}
-	if money, err := strconv.ParseFloat(params["money"], 64); err != nil ||
-		int64(money*100+0.5) != order.AmountCents {
+	cents, err := parseCents(params["money"])
+	if err != nil {
+		log.Printf("[PAY-ALERT] 回调金额无法解析 trade_no=%s money=%q err=%v", info.ServiceTradeNo, params["money"], err)
+		return false
+	}
+	if cents != order.AmountCents {
+		// 金额对不上多半是攻击(小额支付冒领大额套餐),必须显眼
+		log.Printf("[PAY-ALERT] 回调金额与订单不符 trade_no=%s 回调=%d分 订单=%d分 user=%d",
+			info.ServiceTradeNo, cents, order.AmountCents, order.UserID)
 		return false
 	}
 	raw := fmt.Sprintf("%v", params)
-	return subscription.CompleteOrder(h.db, info.ServiceTradeNo, raw) == nil
+	if err := subscription.CompleteOrder(h.db, info.ServiceTradeNo, raw); err != nil {
+		// 钱已收到但发桶失败:用户侧表现为"付了钱没积分",必须留痕以便人工补发
+		log.Printf("[PAY-ALERT] 回调落账失败(款已收,桶未发) trade_no=%s user=%d err=%v",
+			info.ServiceTradeNo, order.UserID, err)
+		return false
+	}
+	log.Printf("[PAY] 回调落账成功 trade_no=%s user=%d 金额=%d分", info.ServiceTradeNo, order.UserID, cents)
+	return true
 }
 
 // Notify 异步通知:易支付要求返回纯文本 success/fail。
