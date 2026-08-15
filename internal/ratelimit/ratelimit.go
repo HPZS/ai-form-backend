@@ -23,21 +23,42 @@ func New() *Limiter {
 	return l
 }
 
+// Rule 一条限流规则。
+type Rule struct {
+	Key    string
+	Limit  int
+	Window time.Duration
+}
+
 // Allow 对 key 在 window 内计数,超过 limit 返回 false。
 func (l *Limiter) Allow(key string, limit int, window time.Duration) bool {
+	return l.AllowAll(Rule{Key: key, Limit: limit, Window: window}) == ""
+}
+
+// AllowAll 多条规则整体判定:全部有余量才一起计数;任一条超限则一条都不计,
+// 返回超限的 key(全部放行时返回空串)。
+//
+// 逐条 Allow 串 `||` 会让"后一条拒绝"的请求白白吃掉前几条的配额:请求没被服务,
+// 却在分钟窗口里占了名额,用户可用次数被凭空削减,且拒绝原因也无法定位到具体规则。
+func (l *Limiter) AllowAll(rules ...Rule) string {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.entries[key]
-	if e == nil || now.Sub(e.windowStart) >= window {
-		l.entries[key] = &entry{windowStart: now, count: 1}
-		return true
+	for _, r := range rules {
+		e := l.entries[r.Key]
+		if e != nil && now.Sub(e.windowStart) < r.Window && e.count >= r.Limit {
+			return r.Key
+		}
 	}
-	if e.count >= limit {
-		return false
+	for _, r := range rules {
+		e := l.entries[r.Key]
+		if e == nil || now.Sub(e.windowStart) >= r.Window {
+			l.entries[r.Key] = &entry{windowStart: now, count: 1}
+			continue
+		}
+		e.count++
 	}
-	e.count++
-	return true
+	return ""
 }
 
 func (l *Limiter) gc() {

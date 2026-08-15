@@ -120,9 +120,9 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			u.POST("/credits/holds", s.createHold)
 			u.PATCH("/credits/holds/:id/heartbeat", s.heartbeat)
 			u.POST("/credits/holds/:id/settle", s.settleHold)
-			u.POST("/tasks/report", s.taskReport)
+			u.POST("/tasks/report", s.userRateLimit("task-report", taskReportPerHour, time.Hour), s.taskReport)
 			u.GET("/subscription/plans", s.plans)
-			u.POST("/subscription/pay", s.pay.CreateOrder)
+			u.POST("/subscription/pay", s.userRateLimit("pay-order", payOrderPerHour, time.Hour), s.pay.CreateOrder)
 
 			aiGroup := u.Group("/ai")
 			for _, spec := range ai.Specs() {
@@ -196,6 +196,9 @@ const (
 	aiPerUserPerDay   = 5000
 	aiPerIPPerDay     = 10000 // 同 IP 全部账号合计:一次性邮箱农场的总量闸门
 	aiTrialPerDay     = 1000  // 无付费底座(试用)的更低日限:薅免费额度的成本闸门
+	// 写接口闸门:一次录入任务一条上报、一次购买一个订单,正常用户远用不到
+	taskReportPerHour = 120
+	payOrderPerHour   = 20
 )
 
 // hasActiveBase 是否持有付费底座桶(试用不算);试用档 AI 日限更严。
@@ -208,22 +211,47 @@ func hasActiveBase(db *gorm.DB, userID int64) (bool, error) {
 	return cnt > 0, err
 }
 
+// aiRateLimit 分钟/日/IP/试用四条闸门一次性判定:被拒的请求一条配额都不消耗
+// (逐条 Allow 串 `||` 会让后一条拒绝的请求白吃掉前几条的名额),拒绝原因落日志。
 func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := c.GetString("email")
-		if !s.limiter.Allow("ai-min:"+capability+":"+key, aiPerCapPerMinute, time.Minute) ||
-			!s.limiter.Allow("ai-day:"+key, aiPerUserPerDay, 24*time.Hour) ||
-			!s.limiter.Allow("ai-ip-day:"+c.ClientIP(), aiPerIPPerDay, 24*time.Hour) {
-			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": "调用太频繁,请稍后再试"})
-			return
-		}
+		// 试用档日限更严,先确定档位才能把它并进同一次判定
 		hasBase, err := hasActiveBase(s.db, c.GetInt64("userID"))
 		if err != nil {
 			abortInternalErr(c, "AI 限流查订阅底座", err)
 			return
 		}
-		if !hasBase && !s.limiter.Allow("ai-day-trial:"+key, aiTrialPerDay, 24*time.Hour) {
-			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": "试用期今日的调用额度已用完,开通个人版后不受此限制"})
+		trialKey := "ai-day-trial:" + key
+		rules := []ratelimit.Rule{
+			{Key: "ai-min:" + capability + ":" + key, Limit: aiPerCapPerMinute, Window: time.Minute},
+			{Key: "ai-day:" + key, Limit: aiPerUserPerDay, Window: 24 * time.Hour},
+			{Key: "ai-ip-day:" + c.ClientIP(), Limit: aiPerIPPerDay, Window: 24 * time.Hour},
+		}
+		if !hasBase {
+			rules = append(rules, ratelimit.Rule{Key: trialKey, Limit: aiTrialPerDay, Window: 24 * time.Hour})
+		}
+		if denied := s.limiter.AllowAll(rules...); denied != "" {
+			log.Printf("[RATE] AI 限流拒绝 rule=%s user=%d capability=%s ip=%s",
+				denied, c.GetInt64("userID"), capability, c.ClientIP())
+			msg := "调用太频繁,请稍后再试"
+			if denied == trialKey {
+				msg = "试用期今日的调用额度已用完,开通个人版后不受此限制"
+			}
+			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": msg})
+			return
+		}
+		c.Next()
+	}
+}
+
+// userRateLimit 按账号限流的通用闸门,用于下单/上报这类写接口:
+// 正常使用远用不到,没有闸门时脚本可无限刷单(留下大量 pending 订单)或灌统计表。
+func (s *Server) userRateLimit(name string, limit int, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !s.limiter.Allow(name+":"+c.GetString("email"), limit, window) {
+			log.Printf("[RATE] %s 限流拒绝 user=%d ip=%s", name, c.GetInt64("userID"), c.ClientIP())
+			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": "操作太频繁,请稍后再试"})
 			return
 		}
 		c.Next()
