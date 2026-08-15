@@ -197,6 +197,62 @@ func TestNotifyRejectsAmountMismatch(t *testing.T) {
 	}
 }
 
+// 超时未支付的订单由后台任务清理;paid 订单永不改写
+func TestExpirePendingOrders(t *testing.T) {
+	_, db, uid := setupNotify(t)
+	seedOrder(t, db, uid, "AIF-old")
+	seedOrder(t, db, uid, "AIF-new")
+	seedOrder(t, db, uid, "AIF-paid")
+	db.Model(&model.PaymentOrder{}).Where("trade_no = ?", "AIF-old").
+		Update("created_at", time.Now().Add(-25*time.Hour))
+	db.Model(&model.PaymentOrder{}).Where("trade_no = ?", "AIF-paid").
+		Updates(map[string]any{"created_at": time.Now().Add(-25 * time.Hour), "status": model.OrderStatusPaid})
+
+	n, err := ExpirePendingOrders(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("应只过期 1 条,实际 %d", n)
+	}
+	if s := orderStatus(t, db, "AIF-old"); s != model.OrderStatusExpired {
+		t.Fatalf("超时订单应过期,实际 %s", s)
+	}
+	if s := orderStatus(t, db, "AIF-new"); s != model.OrderStatusPending {
+		t.Fatalf("新订单不应被动,实际 %s", s)
+	}
+	if s := orderStatus(t, db, "AIF-paid"); s != model.OrderStatusPaid {
+		t.Fatalf("已支付订单永不改写,实际 %s", s)
+	}
+}
+
+// 清理任务不得变成资损来源:已被清成 expired 的订单收到迟到的支付成功回调,仍要落账发桶
+func TestNotifyAfterExpireStillCompletes(t *testing.T) {
+	r, db, uid := setupNotify(t)
+	seedOrder(t, db, uid, "AIF-late")
+	db.Model(&model.PaymentOrder{}).Where("trade_no = ?", "AIF-late").
+		Update("created_at", time.Now().Add(-25*time.Hour))
+	if _, err := ExpirePendingOrders(db); err != nil {
+		t.Fatal(err)
+	}
+
+	body := signedNotify(map[string]string{
+		"pid": "1001", "trade_no": "epay-late", "out_trade_no": "AIF-late",
+		"type": "alipay", "name": "订阅:基础版", "money": "9.90", "trade_status": "TRADE_SUCCESS",
+	}, testEpayKey)
+	if w := postNotify(r, body); w.Body.String() != "success" {
+		t.Fatalf("迟到的合法回调仍应落账,实际 %q", w.Body.String())
+	}
+	if s := orderStatus(t, db, "AIF-late"); s != model.OrderStatusPaid {
+		t.Fatalf("订单应已支付,实际 %s", s)
+	}
+	var cnt int64
+	db.Model(&model.UserSubscription{}).Where("user_id = ?", uid).Count(&cnt)
+	if cnt != 1 {
+		t.Fatalf("应发一个积分桶,实际 %d", cnt)
+	}
+}
+
 // 验签失败(密钥不对/伪造回调):拒付
 func TestNotifyRejectsBadSign(t *testing.T) {
 	r, db, uid := setupNotify(t)

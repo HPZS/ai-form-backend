@@ -243,6 +243,21 @@ func (h *Handler) verifyAndComplete(c *gin.Context) bool {
 	return true
 }
 
+// pendingOrderTTL 未支付订单的存活期。取 24 小时而不是收银台会话那点时间:
+// 清得太急会撞上"用户付了钱、回调姗姗来迟"的窗口,那是资损。
+const pendingOrderTTL = 24 * time.Hour
+
+// ExpirePendingOrders 定时任务:把超时未支付的订单置为 expired(只动 pending,paid 永不改写)。
+// 没有这个任务,每一次拉起支付后放弃都会在库里留下一条永不落地的 pending,
+// 用户订单页全是垃圾记录,对账时也分不清"没付"与"付了没回调"。
+// 迟到的回调仍能落账:CompleteOrder 允许 expired 订单被支付成功翻转。
+func ExpirePendingOrders(db *gorm.DB) (int64, error) {
+	r := db.Model(&model.PaymentOrder{}).
+		Where("status = ? AND created_at <= ?", model.OrderStatusPending, time.Now().Add(-pendingOrderTTL)).
+		Update("status", model.OrderStatusExpired)
+	return r.RowsAffected, r.Error
+}
+
 // Notify 异步通知:易支付要求返回纯文本 success/fail。
 func (h *Handler) Notify(c *gin.Context) {
 	if h.verifyAndComplete(c) {

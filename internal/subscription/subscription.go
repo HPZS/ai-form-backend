@@ -111,13 +111,18 @@ func CompleteOrder(db *gorm.DB, tradeNo, notifyRaw string) error {
 		if order.Status == model.OrderStatusPaid {
 			return nil // 重复回调,幂等成功
 		}
-		if order.Status != model.OrderStatusPending {
+		// expired 也允许翻转:那只是后台清理任务给"超时未付"下的判断,
+		// 而验签通过的支付成功回调是事实——事实优先,否则清理任务会变成资损来源
+		if order.Status != model.OrderStatusPending && order.Status != model.OrderStatusExpired {
 			return fmt.Errorf("订单状态异常: %s", order.Status)
 		}
+		if order.Status == model.OrderStatusExpired {
+			log.Printf("警告: 已过期订单收到支付成功回调,按已付处理 trade_no=%s user=%d", tradeNo, order.UserID)
+		}
 		now := time.Now()
-		// 状态守卫更新:并发回调只有一个能从 pending 翻转
+		// 状态守卫更新:并发回调只有一个能翻转
 		r := tx.Model(&model.PaymentOrder{}).
-			Where("id = ? AND status = ?", order.ID, model.OrderStatusPending).
+			Where("id = ? AND status = ?", order.ID, order.Status).
 			Updates(map[string]any{"status": model.OrderStatusPaid, "paid_at": now, "notify_raw": notifyRaw})
 		if r.Error != nil {
 			return r.Error

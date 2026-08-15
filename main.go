@@ -15,6 +15,7 @@ import (
 	"github.com/HPZS/ai-form-backend/internal/credits"
 	"github.com/HPZS/ai-form-backend/internal/email"
 	"github.com/HPZS/ai-form-backend/internal/model"
+	"github.com/HPZS/ai-form-backend/internal/payment"
 	"github.com/HPZS/ai-form-backend/internal/server"
 	"github.com/HPZS/ai-form-backend/internal/subscription"
 )
@@ -66,6 +67,11 @@ func main() {
 				log.Printf("预占过期任务出错: %v", err)
 			} else if n > 0 {
 				log.Printf("已释放 %d 个过期预占", n)
+			}
+			if n, err := payment.ExpirePendingOrders(db); err != nil {
+				log.Printf("订单过期任务出错: %v", err)
+			} else if n > 0 {
+				log.Printf("已过期 %d 个未支付订单", n)
 			}
 			if _, err := ai.CleanExpiredCaches(db); err != nil {
 				log.Printf("幂等缓存清理出错: %v", err)
