@@ -29,6 +29,11 @@ import (
 
 const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 
+// APIRevision 接口契约版本。请求体是严格解码(DisallowUnknownFields)的:
+// 插件每加一个请求字段,存量后端就会对该能力整体报 400,用户看到的是无差别的行失败。
+// 铁律:**新增/改动任何请求字段,必须同时把这个数字 +1**,插件据此提前告知"后端版本过旧"。
+const APIRevision = 1
+
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
 func internalErr(c *gin.Context, where string, err error) {
@@ -1135,9 +1140,10 @@ func (s *Server) adminAdjustSub(c *gin.Context) {
 
 func (s *Server) about(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"name":    "ai-form-backend",
-		"license": "AGPL-3.0",
-		"source":  sourceRepo,
+		"name":        "ai-form-backend",
+		"apiRevision": APIRevision,
+		"license":     "AGPL-3.0",
+		"source":      sourceRepo,
 		"attribution": []string{
 			"Frontend design and development by New API contributors.",
 			"Based on new-api: https://github.com/QuantumNous/new-api",
