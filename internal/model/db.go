@@ -60,7 +60,7 @@ func Migrate(db *gorm.DB) error {
 		&User{}, &EmailCode{}, &RefreshToken{}, &SsoCode{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
 		&AIDefault{}, &CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
-		&AIRequest{}, &TaskMetric{},
+		&AIRequest{}, &TaskMetric{}, &BillingGroupCharge{},
 	); err != nil {
 		return fmt.Errorf("迁移失败: %w", err)
 	}
@@ -108,14 +108,27 @@ func Migrate(db *gorm.DB) error {
 			}
 		}
 	}
+	// 计费组防重锚点迁移:旧版把"已收费"绑在流水行的部分唯一索引上,与跨桶扣费(每桶一条流水)互斥,
+	// 跨桶带计费组的扣费必然撞索引失败。改为独立表后必须丢弃旧索引,否则老库上问题依旧。
+	if err := db.Exec(`INSERT INTO billing_group_charges (user_id, billing_group_id, request_id, capability, price, created_at)
+		SELECT user_id, billing_group_id, MIN(request_id), MIN(capability), MIN(-delta), MIN(created_at)
+		FROM credit_ledgers WHERE billing_group_id <> '' AND delta < 0
+		  AND NOT EXISTS (SELECT 1 FROM billing_group_charges b
+		    WHERE b.user_id = credit_ledgers.user_id AND b.billing_group_id = credit_ledgers.billing_group_id)
+		GROUP BY user_id, billing_group_id`).Error; err != nil {
+		return fmt.Errorf("回填计费组防重锚点失败: %w", err)
+	}
+	if err := db.Exec(`DROP INDEX IF EXISTS uq_ledger_billing_group`).Error; err != nil {
+		return fmt.Errorf("删除旧计费组索引失败: %w", err)
+	}
 	// 部分唯一索引(postgres 与 sqlite 语法一致):
 	// 1. 幂等闸门:同用户同 requestId 只允许一行
-	// 2. 计费组防重:一组至多一条消费流水
+	// 2. 计费组防重:一组至多收一次费(锚点独立于流水行数)
 	// 3. 防重复预占:同任务至多一个 open hold
 	// 4. 任务统计:同任务一条(重复上报覆盖走 upsert)
 	for _, sql := range []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_requests_user_request ON ai_requests(user_id, request_id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_ledger_billing_group ON credit_ledgers(user_id, billing_group_id) WHERE billing_group_id <> '' AND delta < 0`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_group_charge ON billing_group_charges(user_id, billing_group_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_holds_open_task ON credit_holds(user_id, task_id) WHERE status = 'open'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_task_metrics_user_task ON task_metrics(user_id, task_id)`,
 	} {

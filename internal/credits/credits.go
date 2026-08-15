@@ -117,30 +117,54 @@ func Charge(db *gorm.DB, a ChargeArgs) (ChargeResult, error) {
 		avail := remaining - reservedOther
 
 		if a.Price <= 0 {
-			res.Available = clampZero(remaining - mustHoldsAll(tx, a.UserID, now))
+			all, err := holdsAll(tx, a.UserID, now)
+			if err != nil {
+				return err
+			}
+			res.Available = clampZero(remaining - all)
 			return nil
 		}
 		if len(subs) == 0 {
 			return ErrNoActiveSub
 		}
 
-		// 计费组防重:已有该组的消费流水则视作已计费(锁内检查,唯一索引兜底并发)
+		// 计费组防重:锚点表里已有该组即视作已计费(锁内检查,唯一索引兜底并发)。
+		// 锚点独立于流水行——跨桶扣费每桶一条流水,绑在流水上会与跨桶互斥。
 		if a.BillingGroupID != "" {
 			var cnt int64
-			if err := tx.Model(&model.CreditLedger{}).
-				Where("user_id = ? AND billing_group_id = ? AND delta < 0", a.UserID, a.BillingGroupID).
+			if err := tx.Model(&model.BillingGroupCharge{}).
+				Where("user_id = ? AND billing_group_id = ?", a.UserID, a.BillingGroupID).
 				Count(&cnt).Error; err != nil {
 				return err
 			}
 			if cnt > 0 {
 				res.Charged = 0
-				res.Available = clampZero(remaining - mustHoldsAll(tx, a.UserID, now))
+				avail, err := holdsAll(tx, a.UserID, now)
+				if err != nil {
+					return err
+				}
+				res.Available = clampZero(remaining - avail)
 				return nil
 			}
 		}
 
 		if avail < a.Price {
 			return ErrInsufficient
+		}
+
+		// 先落防重锚点:并发下唯一索引在此拦截,避免同组重复扣费
+		if a.BillingGroupID != "" {
+			anchor := model.BillingGroupCharge{
+				UserID:         a.UserID,
+				BillingGroupID: a.BillingGroupID,
+				RequestID:      a.RequestID,
+				Capability:     a.Capability,
+				Price:          a.Price,
+				CreatedAt:      now,
+			}
+			if err := tx.Create(&anchor).Error; err != nil {
+				return fmt.Errorf("写计费组锚点失败: %w", err)
+			}
 		}
 
 		// 跨桶扣减,先扣最早到期的桶;每桶一条流水(同 request_id)
@@ -160,7 +184,11 @@ func Charge(db *gorm.DB, a ChargeArgs) (ChargeResult, error) {
 			}
 			subs[i].AmountUsed += take
 			rest -= take
-			afterAvail := clampZero(bucketsRemaining(subs) - mustHoldsAll(tx, a.UserID, now))
+			all, err := holdsAll(tx, a.UserID, now)
+			if err != nil {
+				return err
+			}
+			afterAvail := clampZero(bucketsRemaining(subs) - all)
 			row := model.CreditLedger{
 				UserID:         a.UserID,
 				SubscriptionID: subs[i].ID,
@@ -187,19 +215,20 @@ func Charge(db *gorm.DB, a ChargeArgs) (ChargeResult, error) {
 		}
 
 		res.Charged = a.Price
-		res.Available = clampZero(bucketsRemaining(subs) - mustHoldsAll(tx, a.UserID, now))
+		all, err := holdsAll(tx, a.UserID, now)
+		if err != nil {
+			return err
+		}
+		res.Available = clampZero(bucketsRemaining(subs) - all)
 		return nil
 	})
 	return res, err
 }
 
-// mustHoldsAll 计算全部 open hold 冻结额(含本任务),用于对外展示的 available。
-func mustHoldsAll(tx *gorm.DB, userID int64, now time.Time) int64 {
-	v, err := holdsReserved(tx, userID, now, "")
-	if err != nil {
-		return 0
-	}
-	return v
+// holdsAll 计算全部 open hold 冻结额(含本任务),用于对外展示的 available。
+// 查询出错必须上抛:按 0 兜底会把冻结额算没,写进流水的余额快照与返回给用户的可用额都是错的。
+func holdsAll(tx *gorm.DB, userID int64, now time.Time) (int64, error) {
+	return holdsReserved(tx, userID, now, "")
 }
 
 // ===== 管理员手动调整(测试发分/补偿/人工退款) =====
@@ -233,7 +262,11 @@ func AdminGrant(db *gorm.DB, userID int64, planType string, amount int64, days i
 			if err != nil {
 				return err
 			}
-			avail := clampZero(bucketsRemaining(subs) - mustHoldsAll(tx, userID, now))
+			all, err := holdsAll(tx, userID, now)
+			if err != nil {
+				return err
+			}
+			avail := clampZero(bucketsRemaining(subs) - all)
 			row := model.CreditLedger{
 				UserID: userID, SubscriptionID: sub.ID, Capability: "admin_grant",
 				Delta: amount, BalanceAfter: avail, CreatedAt: now,

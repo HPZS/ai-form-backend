@@ -108,3 +108,57 @@ func TestMigrateRenamesAIDefaultsTable(t *testing.T) {
 		t.Fatalf("改名后数据应保留,实际 %+v", def)
 	}
 }
+
+// 老库升级:计费组防重锚点从流水行的部分唯一索引迁到独立表。
+// 必须做到 ①历史已收费的组回填成锚点(防重不失效) ②旧索引丢弃(否则跨桶扣费依旧撞索引)。
+func TestMigrateBillingGroupAnchor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-billing.db")
+	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, e := db.DB(); e == nil {
+			sqlDB.Close()
+		}
+	})
+	// 造一个旧库:有流水表、旧的部分唯一索引,以及一条历史计费组消费
+	if err := db.AutoMigrate(&CreditLedger{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`CREATE UNIQUE INDEX uq_ledger_billing_group ON credit_ledgers(user_id, billing_group_id) WHERE billing_group_id <> '' AND delta < 0`,
+		`INSERT INTO credit_ledgers (user_id, subscription_id, request_id, billing_group_id, capability, delta, price_snapshot, balance_after, created_at)
+		 VALUES (7, 1, 'req-old', 'g-old', 'match_columns', -50, 50, 100, CURRENT_TIMESTAMP)`,
+	} {
+		if err := db.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+
+	var anchor BillingGroupCharge
+	if err := db.First(&anchor, "user_id = ? AND billing_group_id = ?", 7, "g-old").Error; err != nil {
+		t.Fatalf("历史计费组应回填为锚点: %v", err)
+	}
+	if anchor.Price != 50 || anchor.RequestID != "req-old" {
+		t.Fatalf("锚点内容应来自历史流水,实际 %+v", anchor)
+	}
+	// 旧索引必须已丢弃:同组第二条流水(跨桶场景)应能写入
+	if err := db.Exec(`INSERT INTO credit_ledgers (user_id, subscription_id, request_id, billing_group_id, capability, delta, price_snapshot, balance_after, created_at)
+		VALUES (7, 2, 'req-old', 'g-old', 'match_columns', -20, 50, 80, CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("旧索引应已丢弃,同组第二条流水应可写入: %v", err)
+	}
+	// 幂等:再迁一次不应重复回填
+	if err := Migrate(db); err != nil {
+		t.Fatalf("二次迁移失败: %v", err)
+	}
+	var cnt int64
+	db.Model(&BillingGroupCharge{}).Where("user_id = ? AND billing_group_id = ?", 7, "g-old").Count(&cnt)
+	if cnt != 1 {
+		t.Fatalf("锚点应只有一条,实际 %d", cnt)
+	}
+}

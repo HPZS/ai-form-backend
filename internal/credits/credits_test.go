@@ -113,6 +113,38 @@ func TestBillingGroupChargesOnce(t *testing.T) {
 	}
 }
 
+// 跨桶 + 计费组:两者组合曾因"每桶一条流水"撞上计费组防重唯一索引导致整笔扣费失败
+// (模型已调用、成本已发生却回滚 → 重试再撞 → 无限白烧上游费用),防重语义必须与流水行数解耦
+func TestChargeAcrossBucketsWithBillingGroup(t *testing.T) {
+	db, uid := setup(t)
+	addBucket(t, db, uid, 3, time.Hour)     // 先到期,只剩 3
+	addBucket(t, db, uid, 47, 48*time.Hour) // 后到期
+
+	res, err := Charge(db, ChargeArgs{UserID: uid, RequestID: "r1", BillingGroupID: "g1", Capability: "match_columns", Price: 50})
+	if err != nil {
+		t.Fatalf("跨桶带计费组扣费不应失败: %v", err)
+	}
+	if res.Charged != 50 {
+		t.Fatalf("应扣 50,实际 %d", res.Charged)
+	}
+	var rows []model.CreditLedger
+	db.Order("id asc").Find(&rows, "user_id = ?", uid)
+	if len(rows) != 2 {
+		t.Fatalf("应有 2 条流水(每桶一条),实际 %d", len(rows))
+	}
+	if avail, _ := Available(db, uid); avail != 0 {
+		t.Fatalf("扣完应为 0,实际 %d", avail)
+	}
+	// 防重仍须生效:同组再扣不收费
+	r2, err := Charge(db, ChargeArgs{UserID: uid, RequestID: "r2", BillingGroupID: "g1", Capability: "match_columns", Price: 50})
+	if err != nil {
+		t.Fatalf("同组第二次不应报错: %v", err)
+	}
+	if r2.Charged != 0 {
+		t.Fatalf("同组第二次应扣 0,实际 %d", r2.Charged)
+	}
+}
+
 // 余额不足与无订阅
 func TestInsufficientAndNoSub(t *testing.T) {
 	db, uid := setup(t)

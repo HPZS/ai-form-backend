@@ -158,13 +158,26 @@ type AIUpstream struct {
 	UpdatedAt time.Time
 }
 
+// BillingGroupCharge 计费组防重锚点:一个计费组至多收一次费。
+// 独立成表而不复用流水行的唯一索引——跨桶扣费每桶一条流水,
+// 把"已收过费"绑在流水行上会让跨桶与防重互斥,整笔扣费必然失败。
+type BillingGroupCharge struct {
+	ID             int64  `gorm:"primaryKey"`
+	UserID         int64  `gorm:"not null"` // UNIQUE(user_id, billing_group_id) 迁移时建
+	BillingGroupID string `gorm:"size:64;not null"`
+	RequestID      string `gorm:"size:36"`
+	Capability     string `gorm:"size:32"`
+	Price          int64  // 该组首次计费金额(对账用)
+	CreatedAt      time.Time
+}
+
 // CreditLedger 只增不改的积分流水。负 delta=消耗,正 delta=冲正。
 type CreditLedger struct {
 	ID             int64  `gorm:"primaryKey"`
 	UserID         int64  `gorm:"index;not null"`
 	SubscriptionID int64  `gorm:"not null"` // 扣到哪个桶
 	RequestID      string `gorm:"index;size:36"`
-	BillingGroupID string `gorm:"size:64"` // 计费组(方案费/AI格由服务端从请求内容派生);部分唯一索引防重
+	BillingGroupID string `gorm:"index;size:64"` // 计费组(服务端派生);防重锚点见 BillingGroupCharge
 	Capability     string `gorm:"size:32"`
 	Delta          int64  `gorm:"not null"`
 	PriceSnapshot  int64  // 扣费时刻的能力单价

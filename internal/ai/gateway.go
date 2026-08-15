@@ -301,11 +301,11 @@ func hasActiveSubscription(db *gorm.DB, userID int64) (bool, error) {
 	return cnt > 0, err
 }
 
-// groupAlreadyCharged 该计费组是否已有消费流水(与 credits.Charge 的防重判据一致)。
+// groupAlreadyCharged 该计费组是否已收过费(与 credits.Charge 的防重判据同一张锚点表)。
 func (g *Gateway) groupAlreadyCharged(userID int64, groupID string) (bool, error) {
 	var cnt int64
-	err := g.db.Model(&model.CreditLedger{}).
-		Where("user_id = ? AND billing_group_id = ? AND delta < 0", userID, groupID).
+	err := g.db.Model(&model.BillingGroupCharge{}).
+		Where("user_id = ? AND billing_group_id = ?", userID, groupID).
 		Count(&cnt).Error
 	return cnt > 0, err
 }
