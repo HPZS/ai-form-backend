@@ -572,6 +572,12 @@ func (s *Server) createHold(c *gin.Context) {
 func (s *Server) heartbeat(c *gin.Context) {
 	exp, err := credits.Heartbeat(s.db, c.GetInt64("userID"), c.Param("id"))
 	if err != nil {
+		// DB 故障不能伪装成"预占不存在":插件收到 404 会永久清掉 holdId 不再结算,
+		// 冻结额白挂到两小时过期,期间用户的可用余额被压低
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			internalErr(c, "预占心跳", err)
+			return
+		}
 		c.JSON(404, gin.H{"error": "HOLD_NOT_FOUND"})
 		return
 	}

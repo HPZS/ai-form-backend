@@ -198,3 +198,38 @@ func TestUserRateLimit(t *testing.T) {
 		t.Fatalf("第 4 次应 429,实际 %d", w.Code)
 	}
 }
+
+// 心跳:DB 故障与"预占不存在"必须可区分——前者若被伪装成 404,
+// 插件会永久清掉 holdId 不再结算,冻结额白挂到过期
+func TestHeartbeatDistinguishesDBError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := model.User{Email: "t@example.com"}
+	db.Create(&u)
+	s := &Server{db: db, limiter: ratelimit.New()}
+	r := gin.New()
+	r.PATCH("/holds/:id/heartbeat", func(c *gin.Context) {
+		c.Set("userID", u.ID)
+		c.Next()
+	}, s.heartbeat)
+
+	// 预占不存在 → 404
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PATCH", "/holds/nope/heartbeat", nil))
+	if w.Code != 404 {
+		t.Fatalf("不存在的预占应 404,实际 %d: %s", w.Code, w.Body.String())
+	}
+
+	// DB 故障 → 500(不是 404)
+	if err := db.Exec(`DROP TABLE credit_holds`).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PATCH", "/holds/any/heartbeat", nil))
+	if w.Code != 500 {
+		t.Fatalf("DB 故障应 500 而不是伪装成 404,实际 %d: %s", w.Code, w.Body.String())
+	}
+}
