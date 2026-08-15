@@ -256,6 +256,12 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 
 		// 5. 扣费与状态落定(同事务)
 		var chargeRes credits.ChargeResult
+		// 与落库的 prompt_version / model / schema_version 同源:回给客户端的必须是
+		// 真正用过的那一份,不能事后另行拼一个近似值(架构设计 5.1)
+		respMeta := &RespMeta{
+			Capability: spec.Name, PromptVersion: promptVer, SchemaVersion: "v1",
+			Model: usage.Model, Upstream: usage.Upstream, RequestID: meta.RequestID,
+		}
 		txErr := g.db.Transaction(func(tx *gorm.DB) error {
 			var cerr error
 			chargeRes, cerr = credits.Charge(tx, credits.ChargeArgs{
@@ -265,7 +271,8 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			if cerr != nil {
 				return cerr
 			}
-			body, merr := mergeCredits(result, chargeRes)
+			respMeta.LatencyMs = int(time.Since(start).Milliseconds())
+			body, merr := mergeCredits(result, chargeRes, respMeta)
 			if merr != nil {
 				return merr
 			}
@@ -318,7 +325,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			apiErr(c, 500, "INTERNAL", "内部错误")
 			return
 		}
-		body, _ := mergeCredits(result, chargeRes)
+		body, _ := mergeCredits(result, chargeRes, respMeta)
 		c.Data(200, "application/json; charset=utf-8", body)
 	}
 }
@@ -384,8 +391,25 @@ func (g *Gateway) groupAlreadyCharged(userID int64, groupID string) (bool, error
 	return cnt > 0, err
 }
 
-// mergeCredits 把业务结果与 credits 信息合并为一个顶层 JSON 对象。
-func mergeCredits(result any, cr credits.ChargeResult) ([]byte, error) {
+// RespMeta 随每次能力响应回传的版本元信息。
+//
+// 这些值本来只写进 ai_requests 表,客户端拿不到——于是插件的取证包无法回答
+// "这一次是哪个提示词、哪个模型答的"。模型或提示词一改,历史结论就无从归因,
+// 守则 §3.2"仅凭取证材料重建执行路径"在跨仓库这一段直接断掉。
+//
+// 只回版本与标识,不回提示词正文(提示词是私有运行时配置)。
+type RespMeta struct {
+	Capability    string `json:"capability"`
+	PromptVersion string `json:"promptVersion"`
+	SchemaVersion string `json:"schemaVersion"`
+	Model         string `json:"model,omitempty"`
+	Upstream      string `json:"upstream,omitempty"`
+	RequestID     string `json:"requestId"`
+	LatencyMs     int    `json:"latencyMs"`
+}
+
+// mergeCredits 把业务结果、credits 与版本元信息合并为一个顶层 JSON 对象。
+func mergeCredits(result any, cr credits.ChargeResult, meta *RespMeta) ([]byte, error) {
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -395,6 +419,9 @@ func mergeCredits(result any, cr credits.ChargeResult) ([]byte, error) {
 		return nil, err
 	}
 	m["credits"] = map[string]any{"charged": cr.Charged, "available": cr.Available}
+	if meta != nil {
+		m["meta"] = meta
+	}
 	return json.Marshal(m)
 }
 

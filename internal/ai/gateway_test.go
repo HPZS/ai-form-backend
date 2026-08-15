@@ -2,6 +2,7 @@
 package ai
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -586,5 +587,56 @@ func TestClientBillingGroupIgnored(t *testing.T) {
 	}
 	if ar.Credits != 3 {
 		t.Fatalf("应照常扣费 3,实际 %d(客户端自报的计费组骗到了免单)", ar.Credits)
+	}
+}
+
+// 响应回传版本元信息:插件的取证包要能回答"这次是哪个提示词、哪个模型答的"。
+// 这些值原先只写进 ai_requests 表,客户端拿不到,跨仓库的归因链就断在这里(守则 §3.2)。
+func TestRespMetaReturned(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`)))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 200 {
+		t.Fatalf("应 200,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Meta RespMeta `json:"meta"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应不可解析: %v", err)
+	}
+	if resp.Meta.Capability != "match_columns" {
+		t.Fatalf("meta.capability 应为 match_columns,实际 %q", resp.Meta.Capability)
+	}
+	if resp.Meta.PromptVersion != "v1" || resp.Meta.SchemaVersion != "v1" {
+		t.Fatalf("meta 版本不对: prompt=%q schema=%q", resp.Meta.PromptVersion, resp.Meta.SchemaVersion)
+	}
+	if resp.Meta.Model != "m" || resp.Meta.Upstream != "t1" {
+		t.Fatalf("meta 未带上真实模型/上游: model=%q upstream=%q", resp.Meta.Model, resp.Meta.Upstream)
+	}
+	if resp.Meta.RequestID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("meta.requestId 应回显请求 id,实际 %q", resp.Meta.RequestID)
+	}
+	// 回给客户端的必须与落库的同源,不能事后另拼一份
+	var ar model.AIRequest
+	db.First(&ar, "request_id = ?", resp.Meta.RequestID)
+	if ar.PromptVersion != resp.Meta.PromptVersion || ar.Model != resp.Meta.Model {
+		t.Fatalf("响应 meta 与落库记录不一致: 库 prompt=%q model=%q", ar.PromptVersion, ar.Model)
+	}
+}
+
+// 提示词正文属于私有运行时配置,绝不能随 meta 泄漏给客户端
+func TestRespMetaHasNoPromptText(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(chatOK(`{"mapping":[]}`)))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if strings.Contains(w.Body.String(), "测试系统提示词") {
+		t.Fatalf("响应里出现了提示词正文: %s", w.Body.String())
 	}
 }
