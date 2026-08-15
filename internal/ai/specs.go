@@ -5,8 +5,26 @@ package ai
 
 import (
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 )
+
+// logDropped 幻觉过滤留痕。被丢弃的选择器/列名此前零日志:既没法监控各上游的幻觉率
+// (日志里的 request_id 可与 ai_requests 表的 upstream/model 对齐),也没法区分
+// "模型答错"与"服务端过滤过严"——不留痕就等于放弃了这条质量反馈通道(守则 3.2)。
+// 逐条打会被 200 字段的宽表单刷屏,故按 kind 聚合成一条并附前几个样本。
+func logDropped(capability string, req Request, kind string, dropped []string) {
+	if len(dropped) == 0 {
+		return
+	}
+	sample := dropped
+	if len(sample) > 3 {
+		sample = sample[:3]
+	}
+	log.Printf("[AI-HALLUC] capability=%s request_id=%s 丢弃%s %d 项,例: %.200s",
+		capability, req.GetMeta().RequestID, kind, len(dropped), strings.Join(sample, " | "))
+}
 
 func buttonExists(buttons []ButtonInfo, selector string) bool {
 	for _, b := range buttons {
@@ -56,6 +74,7 @@ func Specs() []Spec {
 					return nil, err
 				}
 				if out.OpenSelector != nil && !buttonExists(r.Buttons, *out.OpenSelector) {
+					logDropped("assess_page", req, "openSelector", []string{*out.OpenSelector})
 					out.OpenSelector = nil
 				}
 				return map[string]any{"enterable": out.Enterable, "openSelector": out.OpenSelector}, nil
@@ -75,16 +94,19 @@ func Specs() []Spec {
 					return nil, err
 				}
 				if out.SubmitSelector != nil && !buttonExists(r.Buttons, *out.SubmitSelector) {
+					logDropped("analyze_form", req, "submitSelector", []string{*out.SubmitSelector})
 					out.SubmitSelector = nil
 				}
 				all := append(append([]ButtonInfo{}, r.Buttons...), r.OuterButtons...)
 				if out.OpenSelector != nil && !buttonExists(all, *out.OpenSelector) {
+					logDropped("analyze_form", req, "openSelector", []string{*out.OpenSelector})
 					out.OpenSelector = nil
 				}
 				// 分步表单的"下一步"按钮:必须真实存在,且不能和提交按钮是同一个(自相矛盾按幻觉丢弃)
 				if out.AdvanceSelector != nil &&
 					(!buttonExists(r.Buttons, *out.AdvanceSelector) ||
 						(out.SubmitSelector != nil && *out.AdvanceSelector == *out.SubmitSelector)) {
+					logDropped("analyze_form", req, "advanceSelector", []string{*out.AdvanceSelector})
 					out.AdvanceSelector = nil
 				}
 				return map[string]any{
@@ -106,6 +128,7 @@ func Specs() []Spec {
 					return nil, err
 				}
 				if out.Selector != nil && !buttonExists(r.Buttons, *out.Selector) {
+					logDropped("pick_open_button", req, "selector", []string{*out.Selector})
 					out.Selector = nil
 				}
 				return map[string]any{"selector": out.Selector}, nil
@@ -131,6 +154,7 @@ func Specs() []Spec {
 						}
 					}
 					if !found {
+						logDropped("pick_form", req, "formId", []string{*out.FormID})
 						out.FormID = nil
 					}
 				}
@@ -189,15 +213,20 @@ func Specs() []Spec {
 					validIdx[f.Index] = true
 				}
 				filtered := []mappedColumn{}
+				var badIdx, badCol []string
 				for _, m := range out.Mapping {
 					if !validIdx[m.FieldIndex] {
+						badIdx = append(badIdx, strconv.Itoa(m.FieldIndex))
 						continue
 					}
 					if m.Column != nil && !headerExists(r.Headers, *m.Column) {
+						badCol = append(badCol, *m.Column)
 						continue
 					}
 					filtered = append(filtered, mappedColumn{m.FieldIndex, m.Column})
 				}
+				logDropped("match_columns", req, "fieldIndex", badIdx)
+				logDropped("match_columns", req, "column", badCol)
 				return map[string]any{"mapping": filtered}, nil
 			},
 		},
@@ -221,6 +250,7 @@ func Specs() []Spec {
 						}
 					}
 					if !found {
+						logDropped("suggest_profile", req, "profileId", []string{*out.ProfileID})
 						out.ProfileID = nil
 					}
 				}
@@ -240,17 +270,23 @@ func Specs() []Spec {
 					return nil, err
 				}
 				valid := []string{}
+				var bad []string
 				for _, ccol := range out.ParentColumns {
 					if headerExists(r.Headers, ccol) {
 						valid = append(valid, ccol)
+					} else {
+						bad = append(bad, ccol)
 					}
 				}
+				logDropped("detect_grouping", req, "parentColumn", bad)
 				if len(valid) == 0 {
 					return map[string]any{"parentColumns": nil, "locateColumn": nil}, nil
 				}
 				locate := valid[0]
 				if out.LocateColumn != nil && headerExists(valid, *out.LocateColumn) {
 					locate = *out.LocateColumn
+				} else if out.LocateColumn != nil {
+					logDropped("detect_grouping", req, "locateColumn", []string{*out.LocateColumn})
 				}
 				return map[string]any{"parentColumns": valid, "locateColumn": locate}, nil
 			},
@@ -309,11 +345,15 @@ func Specs() []Spec {
 					valid[p.Index] = true
 				}
 				fixFields := []int{}
+				var bad []string
 				for _, i := range out.FixFields {
 					if valid[i] {
 						fixFields = append(fixFields, i)
+					} else {
+						bad = append(bad, strconv.Itoa(i))
 					}
 				}
+				logDropped("explain_failure", req, "fixField", bad)
 				return map[string]any{
 					"explain": out.Explain, "fix": strings.TrimSpace(out.Fix), "fixFields": fixFields,
 				}, nil
@@ -357,31 +397,39 @@ func Specs() []Spec {
 					validIdx[f.Index] = true
 				}
 				changes := []MappingItem{}
+				var bad []string
 				for _, ch := range out.Changes {
 					if !validIdx[ch.FieldIndex] {
+						bad = append(bad, fmt.Sprintf("字段%d(不存在)", ch.FieldIndex))
 						continue
 					}
 					switch ch.Mode {
 					case "off":
 					case "column":
 						if ch.Column == "" || !headerExists(r.Headers, ch.Column) {
+							bad = append(bad, fmt.Sprintf("字段%d(列%q不存在)", ch.FieldIndex, ch.Column))
 							continue
 						}
 					case "ai", "rule":
 						if strings.TrimSpace(ch.AIPrompt) == "" {
+							bad = append(bad, fmt.Sprintf("字段%d(%s 无提示词)", ch.FieldIndex, ch.Mode))
 							continue
 						}
 					default:
+						bad = append(bad, fmt.Sprintf("字段%d(mode=%q 非法)", ch.FieldIndex, ch.Mode))
 						continue
 					}
 					changes = append(changes, ch)
 				}
+				logDropped("parse_command", req, "change", bad)
 				var order any
 				if out.Order != nil && (out.Order.Dir == "asc" || out.Order.Dir == "desc") {
 					if out.Order.Column == nil {
 						order = map[string]any{"column": nil, "dir": out.Order.Dir}
 					} else if headerExists(r.Headers, *out.Order.Column) {
 						order = map[string]any{"column": *out.Order.Column, "dir": out.Order.Dir}
+					} else {
+						logDropped("parse_command", req, "orderColumn", []string{*out.Order.Column})
 					}
 				}
 				return map[string]any{

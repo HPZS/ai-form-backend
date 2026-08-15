@@ -2,6 +2,9 @@
 package ai
 
 import (
+	"bytes"
+	"log"
+	"os"
 	"strings"
 	"testing"
 )
@@ -86,6 +89,53 @@ func TestGenerateFieldStripsFence(t *testing.T) {
 	}
 	if got := out.(map[string]any)["content"]; got != "用 `code` 表示" {
 		t.Fatalf("正文反引号不该被删,实际 %q", got)
+	}
+}
+
+// 幻觉过滤必须留痕:零日志时既监控不了各上游的幻觉率(request_id 可与 ai_requests 表的
+// upstream/model 对齐),也分不清"模型答错"与"服务端过滤过严"
+func TestHallucinationLogged(t *testing.T) {
+	specs := map[string]Spec{}
+	for _, s := range Specs() {
+		specs[s.Name] = s
+	}
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	req := &MatchColumnsReq{
+		Meta:    Meta{RequestID: "req-1"},
+		Fields:  []FormFieldBrief{{Index: 0}},
+		Headers: []string{"姓名"},
+	}
+	if _, err := specs["match_columns"].Post(req,
+		`{"mapping":[{"fieldIndex":0,"column":"不存在的列"},{"fieldIndex":99,"column":"姓名"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "[AI-HALLUC]") || !strings.Contains(out, "req-1") {
+		t.Fatalf("幻觉过滤应留痕并带 request_id,实际日志: %s", out)
+	}
+	if !strings.Contains(out, "不存在的列") || !strings.Contains(out, "99") {
+		t.Fatalf("日志应能看出丢了什么,实际: %s", out)
+	}
+
+	buf.Reset()
+	assess := &AssessPageReq{Meta: Meta{RequestID: "req-2"}, Buttons: []ButtonInfo{{Selector: "#real"}}}
+	if _, err := specs["assess_page"].Post(assess, `{"enterable":true,"openSelector":"#幻觉"}`); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "#幻觉") {
+		t.Fatalf("单值幻觉也要留痕,实际: %s", buf.String())
+	}
+
+	// 没有过滤发生时不该刷日志
+	buf.Reset()
+	if _, err := specs["assess_page"].Post(assess, `{"enterable":true,"openSelector":"#real"}`); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "[AI-HALLUC]") {
+		t.Fatalf("没有丢弃时不该打日志,实际: %s", buf.String())
 	}
 }
 
