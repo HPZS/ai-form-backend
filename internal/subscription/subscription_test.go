@@ -123,3 +123,56 @@ func TestCompleteOrderFirstBaseBonus(t *testing.T) {
 		t.Fatalf("首充礼只应发一次,实际 %d", bonusCnt)
 	}
 }
+
+// 定时任务:到期的 active 桶置 expired;未到期与已作废的都不动,历史额度不清零
+func TestExpireSubscriptions(t *testing.T) {
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := model.User{Email: "t@example.com"}
+	db.Create(&u)
+	mk := func(endsIn time.Duration, status string) int64 {
+		sub := model.UserSubscription{
+			UserID: u.ID, PlanID: 1, PlanType: model.PlanTypeBase, AmountTotal: 100, AmountUsed: 40,
+			StartsAt: time.Now().Add(-time.Hour), EndsAt: time.Now().Add(endsIn), Status: status,
+		}
+		db.Create(&sub)
+		return sub.ID
+	}
+	due := mk(-time.Minute, model.SubStatusActive)
+	alive := mk(time.Hour, model.SubStatusActive)
+	revoked := mk(-time.Minute, model.SubStatusRevoked)
+
+	n, err := ExpireSubscriptions(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("应只过期 1 个桶,实际 %d", n)
+	}
+	statusOf := func(id int64) string {
+		var s model.UserSubscription
+		db.First(&s, id)
+		return s.Status
+	}
+	if statusOf(due) != model.SubStatusExpired {
+		t.Fatalf("到期桶应置 expired,实际 %s", statusOf(due))
+	}
+	if statusOf(alive) != model.SubStatusActive {
+		t.Fatalf("未到期桶不应被动,实际 %s", statusOf(alive))
+	}
+	if statusOf(revoked) != model.SubStatusRevoked {
+		t.Fatalf("已作废桶不应被改写,实际 %s", statusOf(revoked))
+	}
+	// 只改状态:历史额度一分不动
+	var s model.UserSubscription
+	db.First(&s, due)
+	if s.AmountTotal != 100 || s.AmountUsed != 40 {
+		t.Fatalf("过期只改状态,额度不应被改写: %+v", s)
+	}
+	// 重复执行不再有变更(幂等)
+	if n, _ := ExpireSubscriptions(db); n != 0 {
+		t.Fatalf("重复执行不应再有变更,实际 %d", n)
+	}
+}

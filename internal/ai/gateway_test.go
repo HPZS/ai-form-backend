@@ -463,6 +463,105 @@ func TestStaleLeaseCannotSettle(t *testing.T) {
 	}
 }
 
+// 余额不足:402 且带上可用/所需,不调模型,租约当场释放(买了分就能用原 requestId 重试)
+func TestInsufficientCredits402(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		chatOK(`{"mapping":[]}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+	// 单价抬到超过桶里的 100 分
+	db.Model(&model.CapabilityPrice{}).Where("capability = ?", "match_columns").Update("credits", 500)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 402 {
+		t.Fatalf("余额不足应 402,实际 %d: %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{"INSUFFICIENT_CREDITS", `"available":100`, `"required":500`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("响应应含 %s,实际 %s", want, w.Body.String())
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("余额不足不该调模型,实际 %d 次", hits)
+	}
+	var ar model.AIRequest
+	db.First(&ar, "request_id = ?", "11111111-1111-4111-8111-111111111111")
+	if ar.LeaseExpiresAt.After(time.Now()) {
+		t.Fatal("余额不足应立即释放租约,否则用户买了分还要干等 90 秒才能重试")
+	}
+}
+
+// 能力被停用:403 CAPABILITY_DISABLED,不调模型
+func TestCapabilityDisabled403(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		chatOK(`{"mapping":[]}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+	db.Model(&model.CapabilityPrice{}).Where("capability = ?", "match_columns").Update("enabled", false)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 403 || !strings.Contains(w.Body.String(), "CAPABILITY_DISABLED") {
+		t.Fatalf("停用能力应 403 CAPABILITY_DISABLED,实际 %d: %s", w.Code, w.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("停用能力不该调模型,实际 %d 次", hits)
+	}
+}
+
+// 订阅断档:403 NO_ACTIVE_SUBSCRIPTION(加油包只加分不给资格,门禁只认 base/trial)
+func TestNoActiveSubscription403(t *testing.T) {
+	upstream := httptest.NewServer(chatOK(`{"mapping":[]}`))
+	defer upstream.Close()
+	router, db, uid := setupGateway(t, upstream)
+	// 底座过期,只剩一个加油包桶:有余额但没资格
+	db.Model(&model.UserSubscription{}).Where("user_id = ?", uid).
+		Update("ends_at", time.Now().Add(-time.Minute))
+	db.Create(&model.UserSubscription{
+		UserID: uid, PlanID: 2, PlanType: model.PlanTypePack, AmountTotal: 1000,
+		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
+	})
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 403 || !strings.Contains(w.Body.String(), "NO_ACTIVE_SUBSCRIPTION") {
+		t.Fatalf("无有效订阅应 403 NO_ACTIVE_SUBSCRIPTION,实际 %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// 上游全挂(503):网关层统一翻成 AI_UNAVAILABLE,不扣分,请求落 upstream_error 可原地重跑
+func TestUpstreamDownGives503(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		w.Write([]byte("service unavailable"))
+	}))
+	defer upstream.Close()
+	router, db, _ := setupGateway(t, upstream)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(matchBody)))
+	if w.Code != 503 || !strings.Contains(w.Body.String(), "AI_UNAVAILABLE") {
+		t.Fatalf("上游全挂应 503 AI_UNAVAILABLE,实际 %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	db.Model(&model.CreditLedger{}).Count(&cnt)
+	if cnt != 0 {
+		t.Fatalf("上游故障不应扣分,实际 %d 条流水", cnt)
+	}
+	var ar model.AIRequest
+	db.First(&ar, "request_id = ?", "11111111-1111-4111-8111-111111111111")
+	if ar.Status != model.AIReqUpstreamError {
+		t.Fatalf("应落 upstream_error(未扣费,允许原地重跑),实际 %s", ar.Status)
+	}
+}
+
 // 无派生规则的能力必须忽略客户端自报的 billingGroupId:
 // 用户能从自己的流水里读到历史已扣费的 group id,回放它就能白嫖模型调用
 func TestClientBillingGroupIgnored(t *testing.T) {
