@@ -63,6 +63,32 @@ func TestRequiredKeysPresentPasses(t *testing.T) {
 	}
 }
 
+// generate_field 是纯文本能力,模型常把内容用 ``` 包起来:
+// 不剥围栏,反引号会原样被填进业务系统的表单
+func TestGenerateFieldStripsFence(t *testing.T) {
+	var sp Spec
+	for _, s := range Specs() {
+		if s.Name == "generate_field" {
+			sp = s
+		}
+	}
+	out, err := sp.Post(&GenerateFieldReq{}, "```\n这是一句总结\n```")
+	if err != nil {
+		t.Fatalf("应通过: %v", err)
+	}
+	if got := out.(map[string]any)["content"]; got != "这是一句总结" {
+		t.Fatalf("围栏应被剥掉,实际 %q", got)
+	}
+	// 正文里本来就有的反引号不能被动:那是模型要表达的内容
+	out, err = sp.Post(&GenerateFieldReq{}, "用 `code` 表示")
+	if err != nil {
+		t.Fatalf("应通过: %v", err)
+	}
+	if got := out.(map[string]any)["content"]; got != "用 `code` 表示" {
+		t.Fatalf("正文反引号不该被删,实际 %q", got)
+	}
+}
+
 // 能力登记一致性:Specs / CapabilityMetas / capMaxTokens 三处必须对齐。
 // 漏登记 capMaxTokens 会静默落到默认值(match_columns 就曾因此在宽表单上必然截断),
 // 这类"漏配即静默降级"的结构性弱点必须由测试堵死,不能靠新增能力时记得改五处。

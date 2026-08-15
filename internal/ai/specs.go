@@ -274,7 +274,8 @@ func Specs() []Spec {
 				return generateFieldBillingGroup(userID, req.(*GenerateFieldReq))
 			},
 			Post: func(req Request, content string) (any, error) {
-				v := strings.TrimSpace(content)
+				// 模型常把纯文本也用 ```包起来:不剥围栏,反引号会原样填进业务系统的表单
+				v := stripFence(content)
 				if v == "" {
 					return nil, fmt.Errorf("生成内容为空")
 				}
