@@ -522,13 +522,23 @@ type estimateReq struct {
 	AICells  int64  `json:"aiCells"`
 }
 
-func (s *Server) capPrice(capability string) int64 {
+// capPrice 取能力单价;能力未配置(未播种/已停用)是 0 分,查询出错必须上抛——
+// 按 0 兜底会告诉用户"这次不花钱",随后真扣,是最伤信任的一种静默降级。
+func (s *Server) capPrice(capability string) (int64, error) {
 	var p model.CapabilityPrice
-	if err := s.db.Where("capability = ? AND enabled = ?", capability, true).First(&p).Error; err != nil {
-		return 0
+	err := s.db.Where("capability = ? AND enabled = ?", capability, true).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
 	}
-	return p.Credits
+	if err != nil {
+		return 0, err
+	}
+	return p.Credits, nil
 }
+
+// estimateMaxUnits 单个任务的方案数/AI 格数上限:插件端的行数与字段数远小于此。
+// 不设上限时超大入参会让乘法溢出成负数,预估重新变成"这次不花钱"。
+const estimateMaxUnits = 1_000_000
 
 func (s *Server) estimate(c *gin.Context) {
 	var req estimateReq
@@ -536,14 +546,30 @@ func (s *Server) estimate(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
-	estimated := req.NewPlans*s.capPrice("match_columns") +
-		req.AICells*s.capPrice("generate_field")
+	if req.NewPlans < 0 || req.AICells < 0 {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "newPlans/aiCells 不能为负"})
+		return
+	}
+	if req.NewPlans > estimateMaxUnits || req.AICells > estimateMaxUnits {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "newPlans/aiCells 超出合理范围"})
+		return
+	}
+	planPrice, err := s.capPrice("match_columns")
+	if err != nil {
+		internalErr(c, "预估查方案费单价", err)
+		return
+	}
+	cellPrice, err := s.capPrice("generate_field")
+	if err != nil {
+		internalErr(c, "预估查 AI 格单价", err)
+		return
+	}
 	avail, err := credits.Available(s.db, c.GetInt64("userID"))
 	if err != nil {
 		internalErr(c, "预估任务积分", err)
 		return
 	}
-	c.JSON(200, gin.H{"estimated": estimated, "available": avail})
+	c.JSON(200, gin.H{"estimated": req.NewPlans*planPrice + req.AICells*cellPrice, "available": avail})
 }
 
 type holdReq struct {

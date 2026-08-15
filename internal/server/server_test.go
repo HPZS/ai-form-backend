@@ -128,6 +128,56 @@ func TestCreateHoldInsufficient(t *testing.T) {
 	}
 }
 
+// 预估:公式 = 新方案数 × 方案费 + AI 格数 × 格费
+func TestEstimate(t *testing.T) {
+	r, db, token := setupServer(t)
+	uid := userID(t, db)
+	giveBucket(t, db, uid, 300)
+	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 50, Enabled: true})
+	db.Create(&model.CapabilityPrice{Capability: "generate_field", Credits: 1, Enabled: true})
+
+	w := do(t, r, token, "POST", "/v1/credits/estimate", `{"taskId":"t","newPlans":1,"aiCells":20}`)
+	if w.Code != 200 {
+		t.Fatalf("应 200,实际 %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"estimated":70`) {
+		t.Fatalf("50 + 20 = 70,实际 %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"available":300`) {
+		t.Fatalf("应带上可用余额,实际 %s", w.Body.String())
+	}
+}
+
+// 预估入参必须非负:负数会算出负预估,前端据此显示"这次不花钱"
+func TestEstimateRejectsNegative(t *testing.T) {
+	r, db, token := setupServer(t)
+	giveBucket(t, db, userID(t, db), 300)
+	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 50, Enabled: true})
+
+	for _, body := range []string{
+		`{"taskId":"t","newPlans":-1,"aiCells":0}`,
+		`{"taskId":"t","newPlans":0,"aiCells":-100}`,
+	} {
+		w := do(t, r, token, "POST", "/v1/credits/estimate", body)
+		if w.Code != 400 {
+			t.Fatalf("%s 应 400,实际 %d: %s", body, w.Code, w.Body.String())
+		}
+	}
+}
+
+// 单价查询出错不能静默按 0 算:用户会被告知"这次不花钱",随后真扣
+func TestEstimateDBErrorNotZero(t *testing.T) {
+	r, db, token := setupServer(t)
+	giveBucket(t, db, userID(t, db), 300)
+	if err := db.Exec(`DROP TABLE capability_prices`).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, r, token, "POST", "/v1/credits/estimate", `{"taskId":"t","newPlans":1,"aiCells":0}`)
+	if w.Code != 500 {
+		t.Fatalf("单价查询失败应 500,实际 %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // 封禁用户全站 403(认证中间件出口)
 func TestBannedUserForbidden(t *testing.T) {
 	r, db, token := setupServer(t)
