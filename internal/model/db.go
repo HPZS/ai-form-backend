@@ -148,6 +148,19 @@ func Migrate(db *gorm.DB) error {
 	return nil
 }
 
+// LockSubscription 在事务内锁定并读取额度桶行(桶的读-改-写并发闸门)。
+// 不加锁时两笔并发延期会各自读到同一个 ends_at,后写的覆盖前写的,一笔延期凭空消失;
+// 状态从 expired 翻回 active 的判断也建立在这次读取上。
+func LockSubscription(tx *gorm.DB, subID int64) (UserSubscription, error) {
+	q := tx.Model(&UserSubscription{})
+	if tx.Dialector.Name() == "postgres" {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var sub UserSubscription
+	err := q.Where("id = ?", subID).First(&sub).Error
+	return sub, err
+}
+
 // LockUser 在事务内锁定用户行(积分扣减/预占的并发闸门)。
 // postgres 用 SELECT ... FOR UPDATE;sqlite 写事务本身串行,无需也不支持行锁。
 func LockUser(tx *gorm.DB, userID int64) error {

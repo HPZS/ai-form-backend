@@ -299,9 +299,13 @@ func ExtendBucket(db *gorm.DB, subID int64, days int) (*model.UserSubscription, 
 	}
 	var sub model.UserSubscription
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&sub, subID).Error; err != nil {
+		// 读-改-写必须在锁内:两笔并发延期若各读到同一个 ends_at,后写的会覆盖前写的,
+		// 一笔延期凭空消失(桶的到期时间是钱,不能靠"管理员不会同时点两下"来保证)
+		locked, err := model.LockSubscription(tx, subID)
+		if err != nil {
 			return err
 		}
+		sub = locked
 		if sub.Status == model.SubStatusRevoked {
 			return fmt.Errorf("已作废的桶不能延期")
 		}

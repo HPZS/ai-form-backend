@@ -91,3 +91,42 @@ func TestExtendAndRevokeBucket(t *testing.T) {
 		t.Fatal("不存在的桶作废应报错")
 	}
 }
+
+// 延期是读-改-写:必须在锁内取当前 ends_at,连续延期要累加而不是互相覆盖。
+// (行锁本身只在 postgres 生效——sqlite 写事务天然串行,无法在此复现并发覆盖,
+//  这里固化的是"每次都基于最新值累加"的语义)
+func TestExtendBucketAccumulates(t *testing.T) {
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := model.User{Email: "t@example.com"}
+	db.Create(&u)
+	base := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	sub := model.UserSubscription{
+		UserID: u.ID, PlanType: model.PlanTypeBase, AmountTotal: 100,
+		StartsAt: time.Now(), EndsAt: base, Status: model.SubStatusActive, CreatedAt: time.Now(),
+	}
+	db.Create(&sub)
+
+	if _, err := ExtendBucket(db, sub.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ExtendBucket(db, sub.ID, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := base.AddDate(0, 0, 7)
+	if !got.EndsAt.Equal(want) {
+		t.Fatalf("两次延期应累加到 %v,实际 %v", want, got.EndsAt)
+	}
+	// 库里也必须是累加后的值(返回值与落库值不能各说各话)
+	var fresh model.UserSubscription
+	db.First(&fresh, sub.ID)
+	if fresh.EndsAt.Unix() != want.Unix() {
+		t.Fatalf("库中到期时间应为 %v,实际 %v", want, fresh.EndsAt)
+	}
+	if _, err := ExtendBucket(db, 99999, 3); err == nil {
+		t.Fatal("不存在的桶延期应报错")
+	}
+}
