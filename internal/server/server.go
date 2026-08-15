@@ -584,8 +584,14 @@ func (s *Server) heartbeat(c *gin.Context) {
 	c.JSON(200, gin.H{"expiresAt": exp})
 }
 
+// settleHold 结算。重复结算幂等 204;从不存在的预占必须 404——
+// 一律 204 会把 holdId 串号/传错当成"结算成功",冻结额挂到过期为止都没人知道。
 func (s *Server) settleHold(c *gin.Context) {
 	if err := credits.Settle(s.db, c.GetInt64("userID"), c.Param("id")); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(404, gin.H{"error": "HOLD_NOT_FOUND"})
+			return
+		}
 		internalErr(c, "结算预占", err)
 		return
 	}

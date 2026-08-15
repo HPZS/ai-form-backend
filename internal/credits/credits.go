@@ -9,6 +9,7 @@ package credits
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -207,10 +208,18 @@ func Charge(db *gorm.DB, a ChargeArgs) (ChargeResult, error) {
 
 		// 记入本任务的 hold 消耗(超出预占也照记,remaining 由 max(...,0) 兜底)
 		if a.TaskID != "" {
-			if err := tx.Model(&model.CreditHold{}).
+			r := tx.Model(&model.CreditHold{}).
 				Where("user_id = ? AND task_id = ? AND status = ?", a.UserID, a.TaskID, model.HoldStatusOpen).
-				Update("consumed", gorm.Expr("consumed + ?", a.Price)).Error; err != nil {
-				return err
+				Update("consumed", gorm.Expr("consumed + ?", a.Price))
+			if r.Error != nil {
+				return r.Error
+			}
+			if r.RowsAffected == 0 {
+				// 带着 taskId 扣了费,却没有任何 open hold 承接这笔消耗:多半是租约过期被回收
+				// (心跳断了)或 taskId 串号。扣费本身有效(桶已扣、流水已写),但预占口径与
+				// 实际消耗从此对不上——不留痕就只能等对账时凭空发现差额。
+				log.Printf("[CREDIT] 扣费未记入预占 user=%d task=%s request=%s capability=%s price=%d(无 open hold)",
+					a.UserID, a.TaskID, a.RequestID, a.Capability, a.Price)
 			}
 		}
 
@@ -394,11 +403,29 @@ func Heartbeat(db *gorm.DB, userID int64, holdID string) (time.Time, error) {
 }
 
 // Settle 原子幂等结算(open→settled),释放剩余冻结额,无流水动作。
+// 已结算/已过期是幂等成功;从不存在的 holdID 返回 ErrRecordNotFound——
+// 一律成功会让插件把"服务端根本没有这个预占"当成结算完成,冻结额一直挂到过期为止,
+// holdId 串号/传错这类真实故障也被一起吞掉。
 func Settle(db *gorm.DB, userID int64, holdID string) error {
 	now := time.Now()
-	return db.Model(&model.CreditHold{}).
+	r := db.Model(&model.CreditHold{}).
 		Where("id = ? AND user_id = ? AND status = ?", holdID, userID, model.HoldStatusOpen).
-		Updates(map[string]any{"status": model.HoldStatusSettled, "settled_at": now}).Error
+		Updates(map[string]any{"status": model.HoldStatusSettled, "settled_at": now})
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.RowsAffected > 0 {
+		return nil
+	}
+	var cnt int64
+	if err := db.Model(&model.CreditHold{}).
+		Where("id = ? AND user_id = ?", holdID, userID).Count(&cnt).Error; err != nil {
+		return err
+	}
+	if cnt == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // ExpireHolds 定时任务:释放过期未结算的 hold(浏览器崩溃/任务遗忘兜底)。

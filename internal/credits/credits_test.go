@@ -2,7 +2,11 @@
 package credits
 
 import (
+	"bytes"
 	"errors"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +213,62 @@ func TestHoldLifecycle(t *testing.T) {
 	// 过期后同任务可重新预占
 	if _, err := CreateHold(db, uid, "task-3", 30); err != nil {
 		t.Fatalf("过期后重新预占应成功: %v", err)
+	}
+}
+
+// 结算必须区分"已结算"(幂等成功)与"从不存在"(必须报错):
+// 一律成功会让插件把 holdId 串号/传错当成结算完成,冻结额一直挂到过期
+func TestSettleUnknownHold(t *testing.T) {
+	db, uid := setup(t)
+	addBucket(t, db, uid, 100, time.Hour)
+	h, err := CreateHold(db, uid, "task-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Settle(db, uid, h.ID); err != nil {
+		t.Fatalf("首次结算应成功: %v", err)
+	}
+	if err := Settle(db, uid, h.ID); err != nil {
+		t.Fatalf("重复结算应幂等成功: %v", err)
+	}
+	if err := Settle(db, uid, "根本没有这个单号"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("不存在的预占应报 ErrRecordNotFound,实际 %v", err)
+	}
+	// 别人的 hold 同样按"不存在"处理,不泄露存在性
+	other := model.User{Email: "other@example.com", Role: "user", Status: "active"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Settle(db, other.ID, h.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("跨用户结算应报 ErrRecordNotFound,实际 %v", err)
+	}
+}
+
+// 带 taskId 扣费却没有任何 open hold 承接:扣费有效,但预占口径与实际消耗就此对不上,
+// 必须留痕(租约过期被回收/taskId 串号都会走到这里)
+func TestChargeWithoutHoldLogged(t *testing.T) {
+	db, uid := setup(t)
+	addBucket(t, db, uid, 100, time.Hour)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	if _, err := Charge(db, ChargeArgs{UserID: uid, RequestID: "r1", TaskID: "没有预占的任务", Capability: "x", Price: 5}); err != nil {
+		t.Fatalf("扣费本身应成功: %v", err)
+	}
+	if !strings.Contains(buf.String(), "扣费未记入预占") {
+		t.Fatalf("应留痕,实际日志: %s", buf.String())
+	}
+	// 有 hold 时不该刷这条日志
+	buf.Reset()
+	if _, err := CreateHold(db, uid, "正常任务", 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Charge(db, ChargeArgs{UserID: uid, RequestID: "r2", TaskID: "正常任务", Capability: "x", Price: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "扣费未记入预占") {
+		t.Fatalf("有 open hold 时不该报未记入,实际: %s", buf.String())
 	}
 }
 
