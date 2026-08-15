@@ -83,7 +83,8 @@ func (c *Caller) cooling(id int64) bool {
 	return ok && time.Now().Before(b.coolUntil)
 }
 
-func (c *Caller) markFail(id int64) {
+// markFail 记一次失败;返回是否因此进入冷却(调用方据此告警)。
+func (c *Caller) markFail(id int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b := c.breakers[id]
@@ -95,7 +96,9 @@ func (c *Caller) markFail(id int64) {
 	if b.fails >= coolAfterFails {
 		b.coolUntil = time.Now().Add(coolDuration)
 		b.fails = 0 // 冷却到期后放行探活,重新计数
+		return true
 	}
+	return false
 }
 
 func (c *Caller) markOK(id int64) {
@@ -174,9 +177,15 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 	if len(ups) == 0 {
 		return nil, fmt.Errorf("%w: 没有启用的 AI 上游,请在管理台添加", ErrAllUpstreamsDown)
 	}
-	var lastErr error
+	// 切换过程必须全程留痕:跳过谁、谁失败了、谁被熔断——这三件事此前一件都不落日志,
+	// 线上"AI 时快时慢/偶发 503"完全无从复盘(守则 3.2)。
+	// 错因也要逐家收集:只留最后一家的 lastErr 会把前面几家的真实原因
+	//(401 密钥失效 / 超时 / 响应格式异常)全部丢掉,而它们往往才是根因。
+	var errs []string
 	for _, up := range ups {
 		if c.cooling(up.ID) {
+			log.Printf("[AI-UPSTREAM] 跳过冷却中的上游 name=%s capability=%s", up.Name, capability)
+			errs = append(errs, fmt.Sprintf("上游 %s 冷却中", up.Name))
 			continue
 		}
 		res, err := c.callOnce(ctx, up, params, messages)
@@ -184,13 +193,15 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 			c.markOK(up.ID)
 			return res, nil
 		}
-		c.markFail(up.ID)
-		lastErr = err
+		log.Printf("[AI-UPSTREAM] 上游调用失败,切换下一家 name=%s capability=%s err=%v", up.Name, capability, err)
+		if c.markFail(up.ID) {
+			log.Printf("[AI-UPSTREAM-ALERT] 上游连续失败 %d 次,进入 %v 冷却 name=%s", coolAfterFails, coolDuration, up.Name)
+		}
+		errs = append(errs, err.Error())
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("所有上游均在冷却中")
-	}
-	return nil, fmt.Errorf("%w: %v", ErrAllUpstreamsDown, lastErr)
+	log.Printf("[AI-UPSTREAM-ALERT] 全部上游不可用 capability=%s 上游数=%d 错因=%s",
+		capability, len(ups), strings.Join(errs, " | "))
+	return nil, fmt.Errorf("%w: %s", ErrAllUpstreamsDown, strings.Join(errs, " | "))
 }
 
 type chatRequest struct {

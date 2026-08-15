@@ -2,10 +2,14 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -141,5 +145,57 @@ func TestAllDownAndNoUpstream(t *testing.T) {
 	empty := setupCaller(t) // 无上游
 	if _, err := empty.Call(context.Background(), "test_cap", nil); err == nil {
 		t.Fatal("无上游应返回错误")
+	}
+}
+
+// 全挂时的错误必须含每一家的原因:只留最后一家会把 401/超时/格式异常这些真正的根因丢掉
+func TestAllDownErrorKeepsEveryReason(t *testing.T) {
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte("invalid api key"))
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+		w.Write([]byte("bad gateway"))
+	}))
+	defer b.Close()
+
+	_, err := setupCaller(t, a, b).Call(context.Background(), "test_cap", nil)
+	if err == nil {
+		t.Fatal("全挂应返回错误")
+	}
+	for _, want := range []string{"invalid api key", "bad gateway", "上游 a", "上游 b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误应含 %q,实际: %v", want, err)
+		}
+	}
+}
+
+// 熔断三件事必须落日志:单家失败、进入冷却、冷却期被跳过。
+// 此前全静默,线上"AI 偶发 503"完全无从复盘
+func TestBreakerLogged(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(chatOK("ok"))
+	defer good.Close()
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	caller := setupCaller(t, bad, good)
+	for i := 0; i < 4; i++ { // 前 3 次打坏上游并熔断,第 4 次应跳过它
+		if _, err := caller.Call(context.Background(), "test_cap", nil); err != nil {
+			t.Fatalf("第 %d 次调用应成功: %v", i+1, err)
+		}
+	}
+	out := buf.String()
+	for _, want := range []string{"上游调用失败,切换下一家", "进入", "冷却", "跳过冷却中的上游"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("日志应含 %q,实际: %s", want, out)
+		}
 	}
 }
