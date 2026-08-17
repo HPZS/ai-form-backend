@@ -3,6 +3,7 @@ package ai
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -102,6 +103,56 @@ func TestIdempotentReplay(t *testing.T) {
 	}
 	if !strings.Contains(w1.Body.String(), `"charged":5`) {
 		t.Fatalf("响应应含扣分信息: %s", w1.Body.String())
+	}
+}
+
+// 契约可加字段:插件新增的 required 必须能被严格解码接受,并原样送达模型。
+//
+// 网关是 DisallowUnknownFields,插件多送一个字段就是整批 AI 调用 400
+// (守则 #3「契约无版本协商 + 严格解码」),所以"服务端先加字段、插件后发"这个顺序
+// 必须有测试钉住。而 required 本身是"几个字段抢同一列数据时该给谁"的关键事实:
+// 2026-08-17 新华 xinhuamm 实测,主图 URL 被匹配给了非必填的「应用背景」,
+// 必填的「应用icon」留空,提交被页面拦下,随后的误判自愈又删掉了用户手工调好的整套映射。
+func TestFieldRequiredAcceptedAndReachesModel(t *testing.T) {
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		chatOK(`{"mapping":[{"fieldIndex":0,"column":"imgUrl"}]}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	// 新华那张表单的两个上传字段:应用icon 必填、应用背景选填
+	body := `{"requestId":"22222222-2222-4222-8222-222222222222","fields":[` +
+		`{"index":0,"label":"应用icon","tag":"file","type":"file","name":"","placeholder":"","required":true},` +
+		`{"index":1,"label":"应用背景","tag":"file","type":"file","name":"","placeholder":""}` +
+		`],"headers":["imgUrl"],"sampleRow":{"imgUrl":"http://x/1.jpg"}}`
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("带 required 的请求必须被接受,实际 %d: %s", w.Code, w.Body.String())
+	}
+
+	var chatReq struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(upstreamBody), &chatReq); err != nil {
+		t.Fatalf("解析上游请求失败: %v (%s)", err, upstreamBody)
+	}
+	var prompt string
+	for _, m := range chatReq.Messages {
+		prompt += m.Content
+	}
+	if !strings.Contains(prompt, `"required":true`) {
+		t.Fatalf("required 应原样出现在送给模型的提示词里,实际: %s", prompt)
+	}
+	// omitempty:选填字段不该凭空长出 required,否则模型分不出哪个才是必填
+	if strings.Count(prompt, `"required":true`) != 1 {
+		t.Fatalf("只有必填字段该带 required,实际: %s", prompt)
 	}
 }
 

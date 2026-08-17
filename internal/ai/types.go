@@ -42,8 +42,16 @@ type FormFieldBrief struct {
 	// Context 字段周边的页面文字线索(分组标题/相邻文本,"|"分隔,越靠前离控件越近)。
 	// 自研组件库页面常提不出 label(Input/file),匹配全靠它判断字段用途——
 	// 这是页面上真实存在的文字,不是编造的名字。
-	Context string   `json:"context,omitempty"`
-	Options []string `json:"options,omitempty"`
+	Context string `json:"context,omitempty"`
+	// Required 识别期从页面上采到的必填标记(原生 required/aria-required/组件库标记)。
+	// 几个同类字段抢同一列数据时,这是决定给谁的关键事实:2026-08-17 新华 xinhuamm 实测,
+	// 主图 URL 被匹配给了非必填的「应用背景」,必填的「应用icon」留空,提交被页面直接拦下,
+	// 随后的误判自愈又删掉了用户手工调好的整套映射。当时这个事实根本没送到服务端。
+	//
+	// 注意:网关是 DisallowUnknownFields 严格解码,插件多送一个字段就是整批 400
+	// (守则 #3「契约无版本协商 + 严格解码」)。字段先加、插件后发,顺序不能反。
+	Required bool     `json:"required,omitempty"`
+	Options  []string `json:"options,omitempty"`
 }
 
 type ButtonInfo struct {
