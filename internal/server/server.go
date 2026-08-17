@@ -34,7 +34,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // 铁律:**新增/改动任何请求字段,必须同时把这个数字 +1**,插件据此提前告知"后端版本过旧"。
 //
 // rev2: FormFieldBrief 增加 required(识别期从页面采到的必填标记)
-const APIRevision = 2
+// rev3: FormFieldBrief 增加 labelGuessed(这个 label 是从版面推断的,不是页面上的真名)
+const APIRevision = 3
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

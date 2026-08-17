@@ -50,8 +50,17 @@ type FormFieldBrief struct {
 	//
 	// 注意:网关是 DisallowUnknownFields 严格解码,插件多送一个字段就是整批 400
 	// (守则 #3「契约无版本协商 + 严格解码」)。字段先加、插件后发,顺序不能反。
-	Required bool     `json:"required,omitempty"`
-	Options  []string `json:"options,omitempty"`
+	Required bool `json:"required,omitempty"`
+	// LabelGuessed 这个 label 是插件**从版面推断**出来的,不是页面上写着属于它的真名
+	// (来自与同行字段共享的行标签,或从 context 借的)。
+	// 2026-08-17 Shopee 商品发布页实测:「商品描述」那个富文本推断出的名字是「商品图片」,
+	// 与真的图片字段撞名后被消歧成「商品图片 #2」,用户当成重复的图片位设成了「不填」,
+	// 那一列数据整批没进表单。真名只留在 context 里——模型得知道"这个 label 信不得"。
+	//
+	// 同样受上面那条铁律约束:2026-08-17 插件先发了这个字段,服务端还不认识,
+	// assess-page / analyze-form 双双 400,识别整条链路瘫痪(守则 #16)。
+	LabelGuessed bool     `json:"labelGuessed,omitempty"`
+	Options      []string `json:"options,omitempty"`
 }
 
 type ButtonInfo struct {

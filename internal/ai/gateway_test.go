@@ -156,6 +156,61 @@ func TestFieldRequiredAcceptedAndReachesModel(t *testing.T) {
 	}
 }
 
+// 契约可加字段:插件新增的 labelGuessed 必须能被严格解码接受,并原样送达模型。
+//
+// 复现的问题:2026-08-17。插件给字段清单加了 labelGuessed(这个名字是从版面推断的,
+// 不是页面上写着属于它的真名),而服务端结构体还不认识它,于是 /ai/assess-page 与
+// /ai/analyze-form 双双 400,账号模式下识别整条链路瘫痪
+// (取证包 ai-form-diag-2026-08-17-08-50-20)。
+//
+// 这个信号本身是匹配的关键:实测 Shopee 商品发布页上,「商品描述」那个富文本推断出的
+// 名字是「商品图片」,真名只留在 context 里。模型只有知道"这个 label 信不得"才会去看 context。
+func TestFieldLabelGuessedAcceptedAndReachesModel(t *testing.T) {
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		chatOK(`{"mapping":[{"fieldIndex":0,"column":"商品描述"}]}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	// Shopee 那张表单:富文本的 label 是推断来的(错的),真名在 context 里
+	body := `{"requestId":"33333333-3333-4333-8333-333333333333","fields":[` +
+		`{"index":0,"label":"商品图片","tag":"richtext","type":"richtext","name":"","placeholder":"",` +
+		`"context":"新增图片 | 商品描述 | 基本信息","labelGuessed":true},` +
+		`{"index":1,"label":"商品名称","tag":"input","type":"text","name":"","placeholder":""}` +
+		`],"headers":["商品描述"],"sampleRow":{"商品描述":"欢迎光临"}}`
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("带 labelGuessed 的请求必须被接受,实际 %d: %s", w.Code, w.Body.String())
+	}
+
+	var chatReq struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(upstreamBody), &chatReq); err != nil {
+		t.Fatalf("解析上游请求失败: %v (%s)", err, upstreamBody)
+	}
+	var prompt string
+	for _, m := range chatReq.Messages {
+		prompt += m.Content
+	}
+	if !strings.Contains(prompt, `"labelGuessed":true`) {
+		t.Fatalf("labelGuessed 应原样出现在送给模型的提示词里,实际: %s", prompt)
+	}
+	// omitempty:名字是页面真名的字段不该凭空长出这一位,否则模型分不清哪个 label 才可信
+	if strings.Count(prompt, `"labelGuessed":true`) != 1 {
+		t.Fatalf("只有推断出名字的字段该带 labelGuessed,实际: %s", prompt)
+	}
+	// 注:"labelGuessed 时以 context 为准"这条指令写在 prompts/private/match_columns.yaml(v4),
+	// 私有提示词不入库、单测里加载的是桩,所以这一层由部署时同步 prompts 来保证,不在这里断言。
+}
+
 // 缓存清除后旧 requestId → 410,绝不重调重扣
 func TestIdempotencyExpired(t *testing.T) {
 	var hits int32
