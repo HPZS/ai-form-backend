@@ -41,23 +41,32 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
 	})
 	db.Create(&model.AIDefault{ID: 1, Model: "m"})
-	db.Create(&model.CapabilityPrice{Capability: "match_columns", Credits: 5, Enabled: true})
-	db.Create(&model.CapabilityPrice{Capability: "generate_field", Credits: 1, Enabled: true})
+	// 与生产同口径:SeedDefaults 会给**每一个**能力播一行(计费的两个有单价,其余 0 分)。
+	// 少播一行的后果不是"不计费",是 Caller 直接判「能力未配置」→ 503,整条能力不可用。
+	for _, m := range CapabilityMetas() {
+		credits := map[string]int64{"match_columns": 5, "generate_field": 1}[m.Key]
+		db.Create(&model.CapabilityPrice{Capability: m.Key, Credits: credits, Enabled: true})
+	}
 	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 
 	dir := t.TempDir()
-	writePrompt(t, dir, "match_columns")
-	writePrompt(t, dir, "generate_field")
-	writePrompt(t, dir, "analyze_form")
-	prompts, err := LoadPrompts(dir, []string{"match_columns", "generate_field", "analyze_form"})
+	served := []string{"match_columns", "generate_field", "analyze_form", "detect_identity"}
+	for _, cap := range served {
+		writePrompt(t, dir, cap)
+	}
+	prompts, err := LoadPrompts(dir, served)
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := NewGateway(db, NewCaller(db), prompts)
 
+	servedSet := map[string]bool{}
+	for _, cap := range served {
+		servedSet[cap] = true
+	}
 	r := gin.New()
 	for _, sp := range Specs() {
-		if sp.Name == "match_columns" || sp.Name == "generate_field" || sp.Name == "analyze_form" {
+		if servedSet[sp.Name] {
 			r.POST("/ai/"+strings.ReplaceAll(sp.Name, "_", "-"), func(c *gin.Context) {
 				c.Set("userID", u.ID)
 				c.Next()
@@ -209,6 +218,81 @@ func TestFieldLabelGuessedAcceptedAndReachesModel(t *testing.T) {
 	}
 	// 注:"labelGuessed 时以 context 为准"这条指令写在 prompts/private/match_columns.yaml(v4),
 	// 私有提示词不入库、单测里加载的是桩,所以这一层由部署时同步 prompts 来保证,不在这里断言。
+}
+
+// detect_identity 端到端:插件送的这套请求体必须被严格解码接受,字段名与值原样送达模型,
+// 而模型的回答只能是一个**已存在的**字段名。
+//
+// 为什么要有这个能力:一份竖版商品卡里"一个商品 8 张图"与"8 个商品各 1 张图",
+// 在表格的格子上是同一个东西,平台事实分不开(插件仓库守则 §2.1、#21)。
+// 人能一眼看出,靠的是「商品名称」这四个字的意思——那是可见文本层的事实。
+// 但判定不归模型:它只指认身份字段,插件拿"这个字段在几个位置上有值"确定性地算读法,
+// 算完还要由用户在卡片上点头。
+func TestDetectIdentityAcceptedAndReachesModel(t *testing.T) {
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		chatOK(`{"identityColumn":"商品名称","reason":"每条商品都该有名字"}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	// 用户 2026-08-18 上传的那份商品卡:8 张图、2 个选项、其余只填了第一个位置
+	body := `{"requestId":"66666666-6666-4666-8666-666666666666",` +
+		`"headers":["商品图片","商品名称","选项"],` +
+		`"valueCounts":{"商品图片":8,"商品名称":1,"选项":2},` +
+		`"positionCount":8,` +
+		`"sampleValues":{"商品图片":["嵌图1.jpeg","嵌图2.jpeg"],"商品名称":["2026 Messenger Bag"],"选项":["红色","黑色"]}}`
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/detect-identity", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("detect_identity 的请求体必须被接受,实际 %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"identityColumn":"商品名称"`) {
+		t.Fatalf("应回传指认的字段,实际: %s", w.Body.String())
+	}
+
+	var chatReq struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(upstreamBody), &chatReq); err != nil {
+		t.Fatalf("解析上游请求失败: %v (%s)", err, upstreamBody)
+	}
+	var prompt string
+	for _, m := range chatReq.Messages {
+		prompt += m.Content
+	}
+	// 字段名(语义)与值个数(平台事实)都得送到,少一样模型就没法判身份
+	for _, want := range []string{"商品名称", "商品图片", `"商品名称":1`, `"商品图片":8`, "嵌图1.jpeg"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("提示词里应含 %q,实际: %s", want, prompt)
+		}
+	}
+}
+
+// 模型指认了一个不存在的字段:必须当成"没答"回传 null,不能把幻觉列名传给插件——
+// 插件会拿它去算读法,一份数据就会被读错,而且错得很有道理(守则 #15:推断不许伪装成事实)
+func TestDetectIdentityRejectsHallucinatedColumn(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(
+		chatOK(`{"identityColumn":"根本没有这一列","reason":"瞎猜"}`)))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	body := `{"requestId":"55555555-5555-4555-8555-555555555555",` +
+		`"headers":["商品图片"],"valueCounts":{"商品图片":8},"positionCount":8,` +
+		`"sampleValues":{"商品图片":["嵌图1.jpeg"]}}`
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/detect-identity", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("幻觉应被过滤而不是报错,实际 %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"identityColumn":null`) {
+		t.Fatalf("不存在的字段必须回传 null,实际: %s", w.Body.String())
+	}
 }
 
 // 缓存清除后旧 requestId → 410,绝不重调重扣
@@ -675,7 +759,8 @@ func TestClientBillingGroupIgnored(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(chatOK(`{"submitSelector":null,"openSelector":null,"advanceSelector":null}`)))
 	defer upstream.Close()
 	router, db, uid := setupGateway(t, upstream)
-	db.Create(&model.CapabilityPrice{Capability: "analyze_form", Credits: 3, Enabled: true})
+	// 夹具已按生产口径给每个能力播了一行(单价 0),这里只改这一个能力的单价
+	db.Model(&model.CapabilityPrice{}).Where("capability = ?", "analyze_form").Update("credits", 3)
 	// 伪造一条"该组已收过费"的锚点:若网关采信客户端声明,本次就会被判免单
 	db.Create(&model.BillingGroupCharge{UserID: uid, BillingGroupID: "偷来的组", Capability: "x", Price: 3})
 

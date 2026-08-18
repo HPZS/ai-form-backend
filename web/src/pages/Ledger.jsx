@@ -7,7 +7,8 @@ import { get } from '../api.js';
 const capNames = {
   assess_page: '页面甄别', analyze_form: '表单识别', pick_open_button: '找开表单按钮',
   pick_form: '表单选型', match_columns: '建立录入方案', suggest_profile: '资料判型',
-  detect_grouping: '层级判断', generate_rule: '生成规则', generate_field: 'AI 生成字段',
+  detect_grouping: '层级判断', detect_identity: '身份字段判断',
+  generate_rule: '生成规则', generate_field: 'AI 生成字段',
   explain_failure: '失败诊断', classify_failure: '失败分诊', parse_command: '指令解析',
   admin_grant: '管理员发放',
 };

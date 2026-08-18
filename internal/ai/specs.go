@@ -292,6 +292,31 @@ func Specs() []Spec {
 			},
 		},
 		{
+			Name:   "detect_identity",
+			NewReq: func() Request { return &DetectIdentityReq{} },
+			// 模型只被允许指认一个**已存在的**字段名。它不给"一条还是多条"的结论:
+			// 那个判定在插件侧由平台事实算出(见 DetectIdentityReq 的说明)。
+			Post: func(req Request, content string) (any, error) {
+				r := req.(*DetectIdentityReq)
+				var out struct {
+					IdentityColumn *string `json:"identityColumn"`
+					Reason         string  `json:"reason"`
+				}
+				if err := ParseAIJSONStrict(content, &out, "identityColumn"); err != nil {
+					return nil, err
+				}
+				if out.IdentityColumn != nil && !headerExists(r.Headers, *out.IdentityColumn) {
+					logDropped("detect_identity", req, "identityColumn", []string{*out.IdentityColumn})
+					out.IdentityColumn = nil
+				}
+				// reason 会原样显示给用户(拍板卡上的一句话),所以要截断,不让模型灌长文
+				return map[string]any{
+					"identityColumn": out.IdentityColumn,
+					"reason":         truncRunes(strings.TrimSpace(out.Reason), 60),
+				}, nil
+			},
+		},
+		{
 			Name:   "generate_rule",
 			NewReq: func() Request { return &GenerateRuleReq{} },
 			Post: func(req Request, content string) (any, error) {

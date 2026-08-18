@@ -51,21 +51,25 @@ func SeedDefaults(db *gorm.DB) error {
 			return fmt.Errorf("播种 AI 默认参数失败: %w", err)
 		}
 	}
-	var priceCount int64
-	if err := db.Model(&model.CapabilityPrice{}).Count(&priceCount).Error; err != nil {
-		return err
-	}
-	if priceCount == 0 {
-		// 只播种单价;模型一律走全局默认(温度/maxTokens 由代码按能力定死,不是配置项)。
-		// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
-		// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。
-		creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
-		var prices []model.CapabilityPrice
-		for _, m := range ai.CapabilityMetas() {
-			prices = append(prices, model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true})
+	// 能力单价:**逐个补齐缺的那一行**,不是"表空了才播一次"。
+	//
+	// 原先是 count==0 才整批插入,于是**新增一个能力时线上库永远长不出它那一行**——
+	// 而 Caller 拿不到 CapabilityPrice 会直接判「能力 X 未配置」,网关翻成 503 AI_UNAVAILABLE,
+	// 用户看到的是"AI 服务暂时不可用",根本联想不到是漏了一行配置。
+	// 逐条 FirstOrCreate 对新库老库都幂等,管理员改过的单价也不会被覆盖。
+	//
+	// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
+	// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。模型一律走全局默认
+	// (温度/maxTokens 由代码按能力定死,不是配置项)。
+	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
+	for _, m := range ai.CapabilityMetas() {
+		row := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true}
+		res := db.Where(model.CapabilityPrice{Capability: m.Key}).FirstOrCreate(&row)
+		if res.Error != nil {
+			return fmt.Errorf("播种能力 %s 单价失败: %w", m.Key, res.Error)
 		}
-		if err := db.Create(&prices).Error; err != nil {
-			return fmt.Errorf("播种能力单价失败: %w", err)
+		if res.RowsAffected > 0 {
+			log.Printf("[SEED] 新增能力单价 capability=%s credits=%d", m.Key, row.Credits)
 		}
 	}
 	return nil

@@ -35,7 +35,12 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 //
 // rev2: FormFieldBrief 增加 required(识别期从页面采到的必填标记)
 // rev3: FormFieldBrief 增加 labelGuessed(这个 label 是从版面推断的,不是页面上的真名)
-const APIRevision = 3
+// rev4: 新增能力 detect_identity(表格读法有歧义时指认身份字段)。
+//
+//	新增能力与新增请求字段的失败形态不同——老后端上是 404 而不是 400,只影响这一个能力。
+//	插件拿不到就退回"让用户二选一"的卡片并落日志,不会读错数据;但仍然 +1,
+//	好让插件与取证包能一眼看出线上后端够不够新。
+const APIRevision = 4
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

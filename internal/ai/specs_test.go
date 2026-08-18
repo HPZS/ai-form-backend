@@ -30,6 +30,7 @@ func TestRequiredKeysMissing(t *testing.T) {
 		{"pick_form", &PickFormReq{}, `{}`, "formId"},
 		{"suggest_profile", &SuggestProfileReq{}, `{}`, "profileId"},
 		{"detect_grouping", &DetectGroupingReq{}, `{}`, "parentColumns"},
+		{"detect_identity", &DetectIdentityReq{}, `{}`, "identityColumn"},
 		{"analyze_form", &AnalyzeFormReq{}, `{}`, "submitSelector"},
 		{"match_columns", &MatchColumnsReq{}, `{}`, "mapping"},
 		{"parse_command", &ParseCommandReq{}, `{"changes":[]}`, "reply"},
@@ -136,6 +137,52 @@ func TestHallucinationLogged(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "[AI-HALLUC]") {
 		t.Fatalf("没有丢弃时不该打日志,实际: %s", buf.String())
+	}
+}
+
+// detect_identity 是"模型补语义、判定仍归平台事实"的能力:它唯一被允许说的
+// 就是一个**已存在的**字段名。指认了不存在的字段(幻觉)必须当没答,否则插件那边
+// 会拿一个凭空的列名去算读法,把一份数据读错还看起来很有道理。
+func TestDetectIdentityFiltersHallucination(t *testing.T) {
+	var sp Spec
+	for _, s := range Specs() {
+		if s.Name == "detect_identity" {
+			sp = s
+		}
+	}
+	req := &DetectIdentityReq{Meta: Meta{RequestID: "req-ident"}, Headers: []string{"商品名称", "商品图片"}}
+
+	out, err := sp.Post(req, `{"identityColumn":"商品名称","reason":"每条商品都该有名字"}`)
+	if err != nil {
+		t.Fatalf("正常答案应通过: %v", err)
+	}
+	m := out.(map[string]any)
+	if got := m["identityColumn"]; got == nil || *(got.(*string)) != "商品名称" {
+		t.Fatalf("应原样返回指认的字段,实际 %v", got)
+	}
+
+	// 幻觉字段名 → 当作没答(null),而不是把它传下去
+	out, err = sp.Post(req, `{"identityColumn":"根本没有这一列","reason":"瞎猜的"}`)
+	if err != nil {
+		t.Fatalf("幻觉应被过滤而不是报错: %v", err)
+	}
+	if got := out.(map[string]any)["identityColumn"]; got != (*string)(nil) {
+		t.Fatalf("不存在的字段必须被丢成 null,实际 %v", got)
+	}
+
+	// null 是合法答案:没有字段够格当身份时,老实说没有
+	if _, err := sp.Post(req, `{"identityColumn":null,"reason":"都不像身份"}`); err != nil {
+		t.Fatalf("null 是合法答案,应通过: %v", err)
+	}
+
+	// reason 会原样显示在用户的拍板卡上,必须截断,不让模型灌长文
+	long := strings.Repeat("很", 200)
+	out, err = sp.Post(req, `{"identityColumn":null,"reason":"`+long+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len([]rune(out.(map[string]any)["reason"].(string))); n > 60 {
+		t.Fatalf("reason 应截到 60 字以内,实际 %d", n)
 	}
 }
 

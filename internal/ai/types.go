@@ -337,6 +337,59 @@ func (r *DetectGroupingReq) Validate() error {
 	return checkRows("sampleRows", r.SampleRows, 5, 200)
 }
 
+// DetectIdentityReq 读法有歧义时,请模型指认"哪一个字段是一条记录的身份"。
+//
+// 它**不判断**这份数据是一条还是多条——那个判定由插件用平台事实(每个字段有几个值、
+// 整张表有几个位置)确定性地算出来。模型只提供一件本地拿不到的东西:字段名与值的**语义**
+// (「商品名称」是身份,「商品图片」不是)。
+//
+// 为什么需要它:一份竖版商品卡里"一个商品 8 张图"与"8 个商品各 1 张图",在表格的格子上
+// 是**同一个东西**,OOXML 里没有任何字节能分开(插件仓库守则 §2.1、#21)。人能一眼看出,
+// 靠的正是「商品名称」这四个字的意思——那是可见文本层(L2a)的事实,不是猜测。
+//
+// 安全边界:模型答错会被插件的平台事实反证挡掉(指认的字段必须存在、不能是图片/公式类、
+// 算出的结论必须与值个数自洽),而且结论最终仍要由用户在卡片上确认。
+// **把这个能力整个删掉,插件退回"让用户二选一"——变慢,不会读错。**
+type DetectIdentityReq struct {
+	Meta
+	Headers []string `json:"headers"`
+	// ValueCounts 每个字段读出了几个值(平台事实,插件算好后送来供模型参考)
+	ValueCounts map[string]int `json:"valueCounts"`
+	// PositionCount 整张表有几个"位置"(横版=几行,竖版=几列)
+	PositionCount int `json:"positionCount"`
+	// SampleValues 每个字段的前几个值,让模型看得见内容的语义
+	SampleValues map[string][]string `json:"sampleValues"`
+}
+
+func (r *DetectIdentityReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	if err := checkHeaders(r.Headers); err != nil {
+		return err
+	}
+	if len(r.ValueCounts) > 100 {
+		return fmt.Errorf("valueCounts 数量超限(100)")
+	}
+	if len(r.SampleValues) > 100 {
+		return fmt.Errorf("sampleValues 数量超限(100)")
+	}
+	for k, vs := range r.SampleValues {
+		if err := capStr("列名", k, 200); err != nil {
+			return err
+		}
+		if len(vs) > 3 {
+			return fmt.Errorf("sampleValues[%s] 个数超限(3)", k)
+		}
+		for _, v := range vs {
+			if err := capStr(k, v, 200); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type GenerateRuleReq struct {
 	Meta
 	Field       FormFieldBrief      `json:"field"`

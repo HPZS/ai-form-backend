@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HPZS/ai-form-backend/internal/ai"
 	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
@@ -47,6 +48,46 @@ func TestSeedDefaults(t *testing.T) {
 		if cap != "match_columns" && cap != "generate_field" && credits != 0 {
 			t.Fatalf("能力 %s 应为 0 分,实际 %d", cap, credits)
 		}
+	}
+	// 每一个能力都必须有行:少一行不是"不计费",是 Caller 判「能力未配置」→ 整条能力 503
+	if len(prices) != len(ai.CapabilityMetas()) {
+		t.Fatalf("能力单价应逐个覆盖:能力 %d 个,单价行 %d 条", len(ai.CapabilityMetas()), len(prices))
+	}
+}
+
+// 升级场景:老库已经有单价行,这次发版新增了一个能力——必须给它补一行,
+// 而且**不能覆盖管理员改过的单价**。
+//
+// 复现的问题:播种原先写成"表空了才整批插入",于是新增能力在任何存量库上都长不出配置行,
+// 用户侧表现为该能力恒返回 503「AI 服务暂时不可用」,而根因只是漏了一行(守则 §3.2:
+// 失败原因必须诚实到达人,"服务不可用"把配置缺失伪装成了故障)。
+func TestSeedDefaultsAddsNewCapabilityOnUpgrade(t *testing.T) {
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟老库:删掉某个能力的行(相当于它是本次发版新增的),并把 match_columns 改成管理员定的价
+	newCap := "detect_identity"
+	db.Where("capability = ?", newCap).Delete(&model.CapabilityPrice{})
+	db.Model(&model.CapabilityPrice{}).Where("capability = ?", "match_columns").Update("credits", 77)
+
+	if err := SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	var added model.CapabilityPrice
+	if err := db.First(&added, "capability = ?", newCap).Error; err != nil {
+		t.Fatalf("新增能力 %s 应在升级时补上单价行,实际找不到: %v", newCap, err)
+	}
+	if !added.Enabled {
+		t.Fatalf("补上的能力应是启用的,实际 %+v", added)
+	}
+	var kept model.CapabilityPrice
+	db.First(&kept, "capability = ?", "match_columns")
+	if kept.Credits != 77 {
+		t.Fatalf("管理员改过的单价不能被播种覆盖,实际 %d", kept.Credits)
 	}
 }
 
