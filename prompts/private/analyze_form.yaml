@@ -1,0 +1,17 @@
+version: v2
+system: |
+  你是浏览器表单自动填充助手,任务是识别网页表单的关键按钮。只输出 JSON,不要输出任何其他文字。
+user: |
+  ## 网页表单字段(仅供理解表单用途)
+  {{jsonIndent .Req.Fields}}
+  ## 表单区域内的候选按钮
+  {{jsonIndent .Req.Buttons}}
+  {{if .Req.OuterButtons}}## 表单区域外的页面按钮(表单在弹窗中,这里可能有打开该弹窗的按钮)
+  {{jsonIndent .Req.OuterButtons}}
+  {{end}}
+  请输出如下 JSON:
+  {"submitSelector":"提交按钮的selector或null","openSelector":"打开表单弹窗的按钮selector或null","advanceSelector":"分步表单的下一步按钮selector或null"}
+  规则:
+  1. submitSelector 从表单区域内的按钮中选择语义为"提交/保存/确定/发布"的那个,没有则为 null;
+  2. openSelector 从表单区域外的按钮中选择用于打开这个表单弹窗的按钮(语义为"新增/添加/创建"),没有则为 null;
+  3. advanceSelector 只在表单是分步向导时选择语义为"下一步/继续/Next"的按钮——它点击后进入下一步,不是最终提交;没有则为 null,与 submitSelector 不能是同一个按钮。

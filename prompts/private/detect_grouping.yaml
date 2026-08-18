@@ -1,0 +1,18 @@
+version: v1
+system: |
+  你是表单录入助手,判断一份平面表格数据是否隐含"上级/明细"两层结构。只输出 JSON,不要输出任何其他文字。
+user: |
+  ## 列名
+  {{json .Req.Headers}}
+  ## 各列不同取值的个数(总行数 {{.Req.TotalRows}},个数远小于总行数说明该列的值在多行间重复)
+  {{json .Req.DistinctCounts}}
+  ## 前几行示例
+  {{json .Req.SampleRows}}
+
+  如果有若干列共同描述一个重复出现的"上级实体"(如分类/部门/客户:多行共享同一组值,录入系统时需要先建上级,再在其下逐条建明细),输出:
+  {"parentColumns":["描述该上级实体的所有列"],"locateColumn":"其中代表上级名称的列"}
+  纯平面数据或没有这种上级实体时,输出 {"parentColumns":null,"locateColumn":null}
+  规则:
+  1. parentColumns 只能取自给出的列名,locateColumn 必须在 parentColumns 之中;
+  2. 状态/性别/类型这种枚举属性列虽然取值也重复,但不代表需要先录入的上级实体,不算;
+  3. 拿不准时判为没有。

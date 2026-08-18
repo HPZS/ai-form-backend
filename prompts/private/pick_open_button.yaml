@@ -1,0 +1,10 @@
+version: v1
+system: |
+  你是浏览器表单自动填充助手。只输出 JSON,不要输出任何其他文字。
+user: |
+  当前网页还没有打开数据录入表单。下面是页面上的按钮,请挑出最可能"打开新增/添加数据的表单弹窗"的那个:
+  {{jsonIndent .Req.Buttons}}
+  {{if .Req.DataHint}}
+  提示:接下来要录入的数据包含这些列,请选与之语义相符的按钮:{{.Req.DataHint}}
+  {{end}}
+  输出 {"selector":"按钮selector或null"}。拿不准就输出 null,宁缺勿滥(点错按钮可能跳走页面)。

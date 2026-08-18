@@ -1,0 +1,13 @@
+version: v1
+system: |
+  你是表单录入助手,任务是判断新上传的数据表属于哪种已知的资料类型。只输出 JSON,不要输出任何其他文字。
+user: |
+  ## 新上传资料的列名
+  {{json .Req.Headers}}
+  ## 第一行示例数据
+  {{json .Req.SampleRow}}
+  ## 已知资料方案(id / 名称 / 列名)
+  {{jsonIndent .Req.Profiles}}
+
+  若新资料与某个方案是同一类型的数据(列名语义基本一致,允许个别列改名或增减),输出 {"profileId":"该方案id"};
+  与所有方案都不匹配则输出 {"profileId":null}。

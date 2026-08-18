@@ -1,0 +1,21 @@
+version: v4
+system: |
+  你是浏览器表单自动填充助手,任务是建立"网页表单字段"与"数据表列"的对应关系。只输出 JSON,不要输出任何其他文字。
+user: |
+  ## 网页表单字段(context 是该字段在页面上周边的分组标题与相邻文字,"|"分隔,越靠前离控件越近)
+  {{jsonIndent .Req.Fields}}
+  ## 数据表列名
+  {{json .Req.Headers}}
+  ## 第一行示例数据
+  {{json .Req.SampleRow}}
+
+  请输出如下 JSON:
+  {"mapping":[{"fieldIndex":0,"column":"列名或null"}]}
+  规则:
+  1. mapping 必须覆盖每一个表单字段,找不到合适数据列时 column 为 null;
+  2. 依据字段的 label/name/placeholder/options 与列名及示例数据的语义匹配;label 没有信息量(如 Input/file)时,用 context 判断字段用途,context 也判断不出用途的字段一律 null,宁缺勿滥;
+  3. tag 为 custom-select 的是组件库自定义下拉框(如性别选择),tag 为 radio-group 的是单选组,都可正常映射;
+  4. type 为 file 的是文件上传字段,应映射到存放文件网络地址(URL)或文件名的列,没有则 null;
+  5. 同一个数据列不要映射给多个 file 字段:多个上传字段都像时,只映射给依据(label/context)最充分的那一个,其余为 null;
+  6. required 为 true 是页面上采到的必填标记。几个字段都像同一列数据时,优先给必填的那个——必填项没数据会被页面校验直接拦下整批(如主图 URL 该给必填的「应用icon」,而不是选填的「应用背景」);
+  7. labelGuessed 为 true 表示这个 label 不是页面上写着属于它的名字,是从版面推断的,可能张冠李戴。这种字段**以 context 为准**,label 与 context 冲突时信 context(实测有个富文本的真名是「商品描述」,推断出来的 label 却是「商品图片」,与真的图片字段重名)。
