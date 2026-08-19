@@ -196,3 +196,76 @@ func TestAdminRequired(t *testing.T) {
 		t.Fatalf("普通用户访问管理端点应 403,实际 %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// 流水页码分页:total 准确、按 id 倒序、page/pageSize 生效、越界页返回空而不是报错
+func TestLedgerPagination(t *testing.T) {
+	r, db, token := setupServer(t)
+	uid := userID(t, db)
+	for i := int64(1); i <= 25; i++ {
+		if err := db.Create(&model.CreditLedger{UserID: uid, SubscriptionID: 1, Capability: "match_columns", Delta: -i, BalanceAfter: 1000 - i, CreatedAt: time.Now()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 别人的流水不该混进来
+	if err := db.Create(&model.CreditLedger{UserID: uid + 999, SubscriptionID: 1, Delta: -1, BalanceAfter: 1, CreatedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, r, token, "GET", "/v1/credits/ledger?page=1&pageSize=10", "")
+	if w.Code != 200 {
+		t.Fatalf("第 1 页应 200,实际 %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"total":25`) || !strings.Contains(body, `"page":1`) || !strings.Contains(body, `"pageSize":10`) {
+		t.Fatalf("分页元信息不对: %s", body)
+	}
+	if strings.Count(body, `"Capability"`) != 10 {
+		t.Fatalf("第 1 页应 10 条: %s", body)
+	}
+	// 倒序:第 1 页首条是最后插入的(Delta=-25)
+	if !strings.Contains(body, `"Delta":-25`) || strings.Contains(body, `"Delta":-15`) {
+		t.Fatalf("第 1 页应是最新 10 条(-25..-16): %s", body)
+	}
+
+	w = do(t, r, token, "GET", "/v1/credits/ledger?page=3&pageSize=10", "")
+	if strings.Count(w.Body.String(), `"Capability"`) != 5 {
+		t.Fatalf("第 3 页应余 5 条: %s", w.Body.String())
+	}
+	w = do(t, r, token, "GET", "/v1/credits/ledger?page=9", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"entries":[]`) {
+		t.Fatalf("越界页应 200 + 空数组: %d %s", w.Code, w.Body.String())
+	}
+	// 非法参数回退默认值,不 400
+	w = do(t, r, token, "GET", "/v1/credits/ledger?page=abc&pageSize=-5", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"page":1`) || !strings.Contains(w.Body.String(), `"pageSize":20`) {
+		t.Fatalf("非法分页参数应回退默认: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 在售套餐接口:只返回 for_sale 套餐,并附带首充礼额度(未配置时为 null)
+func TestPlansIncludeFirstPurchaseBonus(t *testing.T) {
+	r, db, token := setupServer(t)
+	w := do(t, r, token, "GET", "/v1/subscription/plans", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"firstPurchaseBonus":null`) {
+		t.Fatalf("未配置首充礼应返回 null: %d %s", w.Code, w.Body.String())
+	}
+	plans := []model.SubscriptionPlan{
+		{Name: "个人版", PlanType: model.PlanTypeBase, PriceCents: 1990, TotalCredits: 500, DurationDays: 30, ForSale: true},
+		{Name: "首充礼", PlanType: model.PlanTypeBonus, TotalCredits: 1500, DurationDays: 60, ForSale: false},
+	}
+	if err := db.Create(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	// ForSale 列带 default:true,零值会被 gorm 当成"未设置"——和播种代码一样显式改回不可售
+	if err := db.Model(&model.SubscriptionPlan{}).Where("plan_type = ?", model.PlanTypeBonus).Update("for_sale", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = do(t, r, token, "GET", "/v1/subscription/plans", "")
+	body := w.Body.String()
+	if !strings.Contains(body, `"firstPurchaseBonus":{"credits":1500,"durationDays":60}`) {
+		t.Fatalf("应带首充礼额度: %s", body)
+	}
+	if strings.Contains(body, `"name":"首充礼"`) {
+		t.Fatalf("不可售的首充礼不该出现在套餐列表里: %s", body)
+	}
+}

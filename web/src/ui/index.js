@@ -4,6 +4,6 @@ export { toast } from 'sonner';
 export { Button, Spinner } from './Button.jsx';
 export { Card } from './Card.jsx';
 export { Input, NumberInput, Select, Field, Switch, Segmented } from './Form.jsx';
-export { Table, LoadMore } from './Table.jsx';
+export { Table, LoadMore, Pagination } from './Table.jsx';
 export { Dialog, Confirm, Menu } from './Overlay.jsx';
 export { Tag, Notice, Progress, fmtTime, fmtDate, fmtNum } from './Misc.jsx';

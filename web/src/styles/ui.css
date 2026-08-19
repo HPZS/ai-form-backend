@@ -150,6 +150,18 @@
 .table-empty { padding: 44px 20px; text-align: center; color: var(--mute); font-size: 13px; }
 .table-loading { display: flex; justify-content: center; padding: 44px; }
 .load-more { display: flex; justify-content: center; padding: 12px; border-top: 1px solid var(--line-soft); }
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 20px; border-top: 1px solid var(--line-soft); }
+.pagination-info { font-size: 12.5px; color: var(--mute); }
+.pagination-pages { display: flex; align-items: center; gap: 2px; }
+.page-btn {
+  min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--soft); font-size: 12.5px; cursor: pointer;
+  transition: background var(--dur), color var(--dur);
+}
+.page-btn:hover { background: var(--bg-deep); color: var(--ink); }
+.page-btn.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.page-btn:disabled { cursor: default; }
+.page-gap { padding: 0 4px; color: var(--mute); font-size: 12px; }
 
 /* ===== Dialog / Popover / Menu (radix) ===== */
 .overlay { position: fixed; inset: 0; z-index: 60; background: rgba(77, 75, 71, .32); backdrop-filter: blur(2px); animation: fade-in .18s ease; }

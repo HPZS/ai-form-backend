@@ -519,18 +519,32 @@ func (s *Server) me(c *gin.Context) {
 	})
 }
 
+// ledger 积分流水,页码分页(?page=1&pageSize=20,pageSize 上限 100)。
+// 只有控制台调用;非法参数回退默认值而不是 400——分页参数错了不该让用户看不到账。
 func (s *Server) ledger(c *gin.Context) {
 	userID := c.GetInt64("userID")
-	q := s.db.Where("user_id = ?", userID).Order("id desc").Limit(50)
-	if before := c.Query("beforeId"); before != "" {
-		q = q.Where("id < ?", before)
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
 	}
-	var rows []model.CreditLedger
-	if err := q.Find(&rows).Error; err != nil {
+	pageSize, _ := strconv.Atoi(c.Query("pageSize"))
+	if pageSize < 1 {
+		pageSize = 20
+	} else if pageSize > 100 {
+		pageSize = 100
+	}
+	base := s.db.Model(&model.CreditLedger{}).Where("user_id = ?", userID)
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		internalErr(c, "查积分流水总数", err)
+		return
+	}
+	rows := make([]model.CreditLedger, 0, pageSize)
+	if err := base.Order("id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		internalErr(c, "查积分流水", err)
 		return
 	}
-	c.JSON(200, gin.H{"entries": rows})
+	c.JSON(200, gin.H{"entries": rows, "total": total, "page": page, "pageSize": pageSize})
 }
 
 // estimateReq 预估请求(方案文档 §6.6):公式 = 新方案数 × 方案费 + AI 格数 × 格费。
@@ -706,7 +720,17 @@ func (s *Server) plans(c *gin.Context) {
 			"credits": p.TotalCredits, "durationDays": p.DurationDays,
 		})
 	}
-	c.JSON(200, gin.H{"plans": out})
+	// 首充礼(bonus 套餐,系统发放不可售)的额度也一并返回,购买页据此展示"首次开通加赠 N 积分",
+	// 不在前端写死——后台改了赠送额度,页面文案要跟着变。未配置则为 null。
+	var firstPurchaseBonus gin.H
+	var bonus model.SubscriptionPlan
+	if err := s.db.Where("plan_type = ?", model.PlanTypeBonus).First(&bonus).Error; err == nil {
+		firstPurchaseBonus = gin.H{"credits": bonus.TotalCredits, "durationDays": bonus.DurationDays}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		internalErr(c, "查首充礼套餐", err)
+		return
+	}
+	c.JSON(200, gin.H{"plans": out, "firstPurchaseBonus": firstPurchaseBonus})
 }
 
 // ===== 管理 =====

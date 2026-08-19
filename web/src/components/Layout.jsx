@@ -109,11 +109,6 @@ export default function ConsoleLayout() {
           </div>
           <div className="page-body" key={pathname + '#body'}><Outlet /></div>
         </main>
-        <footer className="footer">
-          <a href="https://github.com/HPZS/ai-form-backend" target="_blank" rel="noreferrer">源码 · AGPL-3.0</a>
-          <span>·</span>
-          <span>AI 智能录入助手</span>
-        </footer>
       </div>
     </div>
   );
