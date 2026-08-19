@@ -31,6 +31,7 @@ func TestRequiredKeysMissing(t *testing.T) {
 		{"suggest_profile", &SuggestProfileReq{}, `{}`, "profileId"},
 		{"detect_grouping", &DetectGroupingReq{}, `{}`, "parentColumns"},
 		{"detect_identity", &DetectIdentityReq{}, `{}`, "identityColumn"},
+		{"extract_reveal_chain", &ExtractRevealChainReq{}, `{}`, "keep"},
 		{"analyze_form", &AnalyzeFormReq{}, `{}`, "submitSelector"},
 		{"match_columns", &MatchColumnsReq{}, `{}`, "mapping"},
 		{"parse_command", &ParseCommandReq{}, `{"changes":[]}`, "reply"},
@@ -183,6 +184,61 @@ func TestDetectIdentityFiltersHallucination(t *testing.T) {
 	}
 	if n := len([]rune(out.(map[string]any)["reason"].(string))); n > 60 {
 		t.Fatalf("reason 应截到 60 字以内,实际 %d", n)
+	}
+}
+
+// extract_reveal_chain 只许从送来的步骤里挑:非法下标丢弃并留痕、重复去掉、顺序保留;
+// 链里有 input 步骤时不管模型怎么说都判 automatable=false(插件不记输入内容,没法照做);
+// summary/reason 会原样显示给用户,要截断。"产生了目标字段的步骤不许丢"那条证伪在插件侧。
+func TestExtractRevealChainFiltersKeep(t *testing.T) {
+	var sp Spec
+	for _, s := range Specs() {
+		if s.Name == "extract_reveal_chain" {
+			sp = s
+		}
+	}
+	req := &ExtractRevealChainReq{Meta: Meta{RequestID: "req-reveal"}, Steps: []RevealStepBrief{
+		{Index: 0, Kind: "click", Text: "关闭提示"},
+		{Index: 1, Kind: "click", Text: "销售资料", NewFields: []string{"品牌", "价格"}},
+		{Index: 2, Kind: "click", Text: "开启规格", NewFields: []string{"规格1"}},
+	}}
+
+	out, err := sp.Post(req, `{"keep":[1,7,2,1,-1],"summary":"点「销售资料」再开规格","automatable":true,"reason":""}`)
+	if err != nil {
+		t.Fatalf("正常答案应通过: %v", err)
+	}
+	m := out.(map[string]any)
+	if got := m["keep"].([]int); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("非法下标应丢、重复应去、顺序应保留,实际 %v", got)
+	}
+	if m["automatable"] != true {
+		t.Fatalf("全是点击、模型说能 → automatable 应为 true,实际 %v", m["automatable"])
+	}
+
+	// 链里有输入:模型说能也不算
+	req.Steps = append(req.Steps, RevealStepBrief{Index: 3, Kind: "input", Text: "搜索类目"})
+	out, err = sp.Post(req, `{"keep":[1,3],"summary":"x","automatable":true,"reason":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = out.(map[string]any)
+	if m["automatable"] != false || m["reason"] == "" {
+		t.Fatalf("含 input 步骤必须判不能自动照做并给出原因,实际 %v / %q", m["automatable"], m["reason"])
+	}
+
+	// 缺 automatable 键 → 报错(严格解码,不靠默认值糊过去)
+	if _, err := sp.Post(req, `{"keep":[1],"summary":"x"}`); err == nil || !strings.Contains(err.Error(), "automatable") {
+		t.Fatalf("缺 automatable 应报错并点名,实际 %v", err)
+	}
+
+	// summary 截断
+	long := strings.Repeat("很", 300)
+	out, err = sp.Post(req, `{"keep":[1],"summary":"`+long+`","automatable":true,"reason":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len([]rune(out.(map[string]any)["summary"].(string))); n > 80 {
+		t.Fatalf("summary 应截到 80 字以内,实际 %d", n)
 	}
 }
 

@@ -50,7 +50,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 
 	dir := t.TempDir()
-	served := []string{"match_columns", "generate_field", "analyze_form", "detect_identity"}
+	served := []string{"match_columns", "generate_field", "analyze_form", "detect_identity", "extract_reveal_chain"}
 	for _, cap := range served {
 		writePrompt(t, dir, cap)
 	}
@@ -292,6 +292,55 @@ func TestDetectIdentityRejectsHallucinatedColumn(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"identityColumn":null`) {
 		t.Fatalf("不存在的字段必须回传 null,实际: %s", w.Body.String())
+	}
+}
+
+// extract_reveal_chain 端到端:插件送的这套请求体必须被严格解码接受,步骤文本与页面变化原样送达模型,
+// 模型挑出的步骤下标经过滤后回传。
+//
+// 为什么要有这个能力:目标字段要先点开某个区域(「销售资料」标签页)才出现,这类操作每个产品都不一样,
+// 不许写进插件代码;于是请用户示范一遍,模型从示范里挑出必要的步骤。结论还要过插件本地证伪、回放逐步验收。
+func TestExtractRevealChainAcceptedAndReachesModel(t *testing.T) {
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		chatOK(`{"keep":[1],"summary":"点「销售资料」标签页","automatable":true,"reason":""}`)(w, r)
+	}))
+	defer upstream.Close()
+	router, _, _ := setupGateway(t, upstream)
+
+	// 2026-08-19 Shopee 商品发布页:用户先误点了一下关闭提示,再点「销售资料」,冒出一批字段
+	body := `{"requestId":"77777777-7777-4777-8777-777777777777",` +
+		`"steps":[{"index":0,"kind":"click","text":"关闭提示","newFields":[],"lostFields":0,"dialog":false,"urlChanged":false},` +
+		`{"index":1,"kind":"click","text":"销售资料","newFields":["品牌","价格","数量"],"lostFields":2,"dialog":false,"urlChanged":false}],` +
+		`"targets":["品牌","价格","数量"],"revealed":["品牌","价格","数量"]}`
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/extract-reveal-chain", strings.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("extract_reveal_chain 的请求体必须被接受,实际 %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"keep":[1]`) || !strings.Contains(w.Body.String(), `"automatable":true`) {
+		t.Fatalf("应回传挑出的步骤与可自动化判断,实际: %s", w.Body.String())
+	}
+
+	var chatReq struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(upstreamBody), &chatReq); err != nil {
+		t.Fatalf("解析上游请求失败: %v (%s)", err, upstreamBody)
+	}
+	var prompt string
+	for _, m := range chatReq.Messages {
+		prompt += m.Content
+	}
+	for _, want := range []string{"销售资料", "关闭提示", "品牌", `"lostFields":2`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("提示词里应含 %q,实际: %s", want, prompt)
+		}
 	}
 }
 

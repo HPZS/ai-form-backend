@@ -317,6 +317,55 @@ func Specs() []Spec {
 			},
 		},
 		{
+			Name:   "extract_reveal_chain",
+			NewReq: func() Request { return &ExtractRevealChainReq{} },
+			// 模型只能从送来的步骤里挑(下标合法、去重、保持顺序);summary/reason 会原样显示给用户,截断。
+			// "产生了目标字段的步骤不许丢"这条证伪在插件侧做(它手里有完整的步骤与字段),这里只管形态合法。
+			Post: func(req Request, content string) (any, error) {
+				r := req.(*ExtractRevealChainReq)
+				var out struct {
+					Keep        []int  `json:"keep"`
+					Summary     string `json:"summary"`
+					Automatable *bool  `json:"automatable"`
+					Reason      string `json:"reason"`
+				}
+				if err := ParseAIJSONStrict(content, &out, "keep", "automatable"); err != nil {
+					return nil, err
+				}
+				seen := map[int]bool{}
+				keep := make([]int, 0, len(out.Keep))
+				var bad []string
+				for _, k := range out.Keep {
+					if k < 0 || k >= len(r.Steps) {
+						bad = append(bad, strconv.Itoa(k))
+						continue
+					}
+					if seen[k] {
+						continue
+					}
+					seen[k] = true
+					keep = append(keep, k)
+				}
+				logDropped("extract_reveal_chain", req, "keep", bad)
+				automatable := out.Automatable == nil || *out.Automatable
+				// 链里有"输入"这一步就不可能自动照做(插件不记输入内容):模型说能也不算
+				for _, k := range keep {
+					if r.Steps[k].Kind == "input" {
+						automatable = false
+						if strings.TrimSpace(out.Reason) == "" {
+							out.Reason = "其中一步要输入内容"
+						}
+					}
+				}
+				return map[string]any{
+					"keep":        keep,
+					"summary":     truncRunes(strings.TrimSpace(out.Summary), 80),
+					"automatable": automatable,
+					"reason":      truncRunes(strings.TrimSpace(out.Reason), 120),
+				}, nil
+			},
+		},
+		{
 			Name:   "generate_rule",
 			NewReq: func() Request { return &GenerateRuleReq{} },
 			Post: func(req Request, content string) (any, error) {

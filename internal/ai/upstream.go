@@ -127,6 +127,8 @@ var capMaxTokens = map[string]int{
 	"detect_grouping":  800,
 	// 只回一个字段名加一句理由(理由服务端截到 60 字),输出天然很小
 	"detect_identity": 300,
+	// 只回一串下标 + 两句短话
+	"extract_reveal_chain": 400,
 	// 输出体量最大的能力:上限 200 字段,每条 mapping 约 30~40 token
 	"match_columns":    8000,
 	"generate_rule":    4000,

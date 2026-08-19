@@ -404,6 +404,79 @@ func (r *DetectIdentityReq) Validate() error {
 	return nil
 }
 
+// RevealStepBrief 用户示范里的一步:做了什么(点/输入 + 可见文本),页面随后发生了什么(平台事实)。
+// **不含选择器、不含输入内容**:前者是插件本地的定位信息,模型用不上;后者是用户数据。
+type RevealStepBrief struct {
+	Index int    `json:"index"`
+	Kind  string `json:"kind"` // click | input
+	Text  string `json:"text"`
+	// NewFields 这一步之后新出现的字段名
+	NewFields []string `json:"newFields"`
+	// LostFields 这一步之后消失的字段数(切标签页会收起另一页)
+	LostFields int  `json:"lostFields"`
+	Dialog     bool `json:"dialog"`
+	URLChanged bool `json:"urlChanged"`
+}
+
+// ExtractRevealChainReq 示范学习(插件仓库守则 #29):目标字段要先点开某个区域(标签页 / 「更多设置」/
+// 开关)才会出现,这些操作每个产品都不一样,不许写进代码;于是请用户在网页上亲手做一遍,
+// 插件旁听记下每一步连同这一步之后页面的变化。模型只做一件事:从这串操作里**挑出真正必要的几步**
+// (去掉误点、关提示、来回切换),并判断这条链是不是每条数据都能原样照做。
+//
+// 安全边界:模型给的 keep 要过插件本地的 L1 证伪——产生了目标字段的步骤一个都不许丢;
+// 不合法就退回确定性基线(有效果的步骤全留)。而且回放时每一步还要拿证据验收。
+// **把这个能力整个删掉,插件退回基线——链啰嗦一点,不会错。**
+type ExtractRevealChainReq struct {
+	Meta
+	Steps []RevealStepBrief `json:"steps"`
+	// Targets 要找的数据列 / 字段名(用户想填、却没着落的那些)
+	Targets []string `json:"targets"`
+	// Revealed 示范结束后新出现的字段名
+	Revealed []string `json:"revealed"`
+}
+
+func (r *ExtractRevealChainReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	if len(r.Steps) == 0 {
+		return fmt.Errorf("steps 为空")
+	}
+	if len(r.Steps) > 40 {
+		return fmt.Errorf("steps 数量超限(40)")
+	}
+	for i, s := range r.Steps {
+		if s.Kind != "click" && s.Kind != "input" {
+			return fmt.Errorf("steps[%d].kind 非法", i)
+		}
+		if err := capStr("text", s.Text, 50); err != nil {
+			return err
+		}
+		if len(s.NewFields) > 60 {
+			return fmt.Errorf("steps[%d].newFields 数量超限(60)", i)
+		}
+		for _, n := range s.NewFields {
+			if err := capStr("newFields", n, 100); err != nil {
+				return err
+			}
+		}
+	}
+	for _, list := range []struct {
+		k  string
+		vs []string
+	}{{"targets", r.Targets}, {"revealed", r.Revealed}} {
+		if len(list.vs) > 100 {
+			return fmt.Errorf("%s 数量超限(100)", list.k)
+		}
+		for _, v := range list.vs {
+			if err := capStr(list.k, v, 100); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type GenerateRuleReq struct {
 	Meta
 	Field       FormFieldBrief      `json:"field"`
