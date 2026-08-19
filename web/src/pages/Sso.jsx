@@ -3,8 +3,8 @@
 // 码放 URL fragment,不会出现在服务端访问日志里。
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Spin, Typography, Button } from '@douyinfe/semi-ui';
 import { post, setTokens } from '../api.js';
+import { Button, Spinner } from '../ui';
 
 export default function Sso() {
   const navigate = useNavigate();
@@ -25,18 +25,20 @@ export default function Sso() {
       .catch((e) => setError(e.message || '登录码无效或已过期'));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (error) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 120, gap: 12 }}>
-        <Typography.Title heading={4}>自动登录失败</Typography.Title>
-        <Typography.Text type="tertiary">{error}(登录码 60 秒内有效且只能用一次,请回插件重新点击)</Typography.Text>
-        <Button theme="solid" onClick={() => navigate('/login')}>手动登录</Button>
-      </div>
-    );
-  }
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', marginTop: 120 }}>
-      <Spin size="large" tip="正在为你自动登录..." />
+    <div className="screen-center">
+      {error ? (
+        <div className="stack">
+          <h2>自动登录失败</h2>
+          <p>{error}。登录码 60 秒内有效且只能用一次,请回插件重新点击。</p>
+          <Button variant="primary" onClick={() => navigate('/login')}>手动登录</Button>
+        </div>
+      ) : (
+        <div className="stack">
+          <Spinner size="lg" />
+          <p>正在为你自动登录…</p>
+        </div>
+      )}
     </div>
   );
 }

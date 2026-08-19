@@ -1,8 +1,8 @@
 // ai-form-backend console - AGPL-3.0
 // 积分流水:游标分页,只增不改的账目。
 import React, { useEffect, useState } from 'react';
-import { Card, Table, Button, Toast, Tag } from '@douyinfe/semi-ui';
 import { get } from '../api.js';
+import { Card, Table, LoadMore, toast, fmtTime, fmtNum } from '../ui';
 
 const capNames = {
   assess_page: '页面甄别', analyze_form: '表单识别', pick_open_button: '找开表单按钮',
@@ -24,31 +24,27 @@ export default function Ledger() {
       const d = await get('/v1/credits/ledger' + (beforeId ? `?beforeId=${beforeId}` : ''));
       setRows((old) => [...old, ...d.entries]);
       if (d.entries.length < 50) setDone(true);
-    } catch (e) { Toast.error(e.message); }
+    } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const columns = [
-    { title: '时间', dataIndex: 'CreatedAt', render: (v) => new Date(v).toLocaleString('zh-CN') },
-    { title: '能力', dataIndex: 'Capability', render: (v) => capNames[v] || v || '-' },
+    { title: '时间', key: 'CreatedAt', width: 180, render: (r) => <span className="num muted">{fmtTime(r.CreatedAt)}</span> },
+    { title: '事项', key: 'Capability', render: (r) => <span className="cell-title">{capNames[r.Capability] || r.Capability || '—'}</span> },
+    { title: '单价', key: 'PriceSnapshot', align: 'right', render: (r) => <span className="num muted">{r.PriceSnapshot ?? '—'}</span> },
     {
-      title: '积分变动', dataIndex: 'Delta',
-      render: (v) => <Tag color={v < 0 ? 'orange' : 'green'}>{v > 0 ? '+' : ''}{v}</Tag>,
+      title: '变动', key: 'Delta', align: 'right',
+      render: (r) => <span className={'num delta ' + (r.Delta < 0 ? 'neg' : 'pos')}>{r.Delta > 0 ? '+' : ''}{fmtNum(r.Delta)}</span>,
     },
-    { title: '单价快照', dataIndex: 'PriceSnapshot' },
-    { title: '变动后可用', dataIndex: 'BalanceAfter' },
+    { title: '余额', key: 'BalanceAfter', align: 'right', render: (r) => <span className="num">{fmtNum(r.BalanceAfter)}</span> },
   ];
 
   return (
-    <Card className="data-card" title="流水记录">
-      <Table columns={columns} dataSource={rows} pagination={false} rowKey="ID" size="small" loading={loading && rows.length === 0} />
-      <div className="load-more-row">
-        {!done && rows.length > 0 && (
-          <Button loading={loading} onClick={() => load(rows[rows.length - 1].ID)}>加载更多</Button>
-        )}
-      </div>
+    <Card flush title="流水记录" extra={rows.length > 0 ? `已加载 ${rows.length} 条` : null}>
+      <Table columns={columns} rows={rows} rowKey="ID" loading={loading} empty="还没有流水记录" />
+      <LoadMore done={done} loading={loading} count={rows.length} onClick={() => load(rows[rows.length - 1].ID)} />
     </Card>
   );
 }

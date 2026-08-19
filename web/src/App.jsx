@@ -1,8 +1,9 @@
 // ai-form-backend console - AGPL-3.0
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Spin } from '@douyinfe/semi-ui';
+import { Toaster } from 'sonner';
 import { get, hasTokens } from './api.js';
+import { Spinner } from './ui';
 import Login from './pages/Login.jsx';
 import Sso from './pages/Sso.jsx';
 import ConsoleLayout from './components/Layout.jsx';
@@ -23,7 +24,7 @@ function Protected({ children }) {
     if (!hasTokens()) { setLoading(false); return; }
     get('/v1/me').then(setMe).catch(() => {}).finally(() => setLoading(false));
   }, []);
-  if (loading) return <div className="app-loading"><Spin size="large" tip="正在加载控制台..." /></div>;
+  if (loading) return <div className="screen-center"><Spinner size="lg" /></div>;
   if (!me) return <Navigate to="/login" replace />;
   return (
     <MeContext.Provider value={{ me, reload: () => get('/v1/me').then(setMe) }}>
@@ -35,6 +36,7 @@ function Protected({ children }) {
 export default function App() {
   return (
     <BrowserRouter>
+      <Toaster position="top-center" offset={20} duration={3200} />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/sso" element={<Sso />} />

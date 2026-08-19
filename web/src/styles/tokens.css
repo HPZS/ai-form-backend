@@ -1,0 +1,53 @@
+/* ai-form-backend console - AGPL-3.0
+ * 设计 token:与插件端(ai-auto-form/components/Panel.vue)同一套莫兰迪色系——
+ * 暖白纸底、燕麦米层次、雾霾蓝主色、语义色统一蒙灰降饱和。两端看起来是同一个产品。 */
+:root {
+  /* 文字 */
+  --ink: #4d4b47;         /* 标题、强调 */
+  --text: #57544f;        /* 正文 */
+  --soft: #6f6a62;        /* 次要说明 */
+  --mute: #9b958b;        /* 占位、三级信息 */
+
+  /* 面与线 */
+  --bg: #fbfaf7;          /* 页面底:暖白 */
+  --bg-soft: #f4f1ec;     /* 燕麦米:侧栏、浅填充 */
+  --bg-deep: #ece8e0;     /* 更深一层:hover、分隔 */
+  --surface: #ffffff;     /* 卡片 */
+  --line: #e6e1d8;
+  --line-soft: #efebe4;
+
+  /* 主色:雾霾蓝 */
+  --accent: #566f7f;
+  --accent-deep: #4d6575;
+  --accent-soft: #e7ecef;
+  --accent-ink: #3f5361;
+  --ring: rgba(86, 111, 127, .22);
+
+  /* 语义色(灰绿 / 灰橘 / 灰红) */
+  --ok: #5c7156;     --ok-soft: #e9ede6;
+  --warn: #875c45;   --warn-soft: #f1e7e0;
+  --danger: #8c544e; --danger-soft: #f2e5e3;
+
+  /* 形 */
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --shadow-xs: 0 1px 2px rgba(77, 75, 71, .04);
+  --shadow-sm: 0 1px 2px rgba(77, 75, 71, .04), 0 4px 12px rgba(77, 75, 71, .04);
+  --shadow-md: 0 2px 6px rgba(77, 75, 71, .05), 0 12px 32px rgba(77, 75, 71, .08);
+  --shadow-lg: 0 8px 24px rgba(77, 75, 71, .08), 0 24px 64px rgba(77, 75, 71, .12);
+  --shadow-accent: 0 4px 12px rgba(106, 128, 144, .30);
+
+  /* 字 */
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* 动 */
+  --dur: .18s;
+  --ease: cubic-bezier(.25, .8, .35, 1);
+
+  /* 布局 */
+  --sidebar-w: 236px;
+  --content-max: 1080px;
+}
