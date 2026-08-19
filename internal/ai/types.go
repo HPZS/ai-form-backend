@@ -262,6 +262,16 @@ type MatchColumnsReq struct {
 	Fields    []FormFieldBrief  `json:"fields"`
 	Headers   []string          `json:"headers"`
 	SampleRow map[string]string `json:"sampleRow"`
+	// UsedColumns 本次匹配之前**已经被别的字段接走**的数据列。
+	//
+	// dynamic 是增量匹配:插件只把新出现的字段送过来,模型看不到已经建好的映射,
+	// 于是同一列会被再指派一次。2026-08-19 Shopee 实测:「数量」先给了商品属性区的
+	// 「数量」,规格表出现后又给了「商品数量」;「价格」同样两处。后果是同一份数据填两个地方,
+	// 交接卡上也就出现两条一模一样的待办。
+	//
+	// 这是**线索不是禁令**:一列确实要填多处时(主图既做封面又做规格图)照旧可以再指派,
+	// 只是要求模型有更充分的依据。
+	UsedColumns []string `json:"usedColumns,omitempty"`
 }
 
 func (r *MatchColumnsReq) Validate() error {
@@ -277,6 +287,10 @@ func (r *MatchColumnsReq) Validate() error {
 		return err
 	}
 	if err := checkHeaders(r.Headers); err != nil {
+		return err
+	}
+	// 已占用列与 headers 同一把尺子:它本来就是 headers 的子集,不该有另一套上限
+	if err := checkHeaders(r.UsedColumns); err != nil {
 		return err
 	}
 	return checkRow("sampleRow", r.SampleRow, 200)
