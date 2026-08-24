@@ -4,12 +4,160 @@
 package ai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 )
+
+type agentAction struct {
+	Op                 string   `json:"op"`
+	TargetNodeID       string   `json:"targetNodeId,omitempty"`
+	ValueRef           string   `json:"valueRef,omitempty"`
+	Transform          string   `json:"transform,omitempty"`
+	Key                string   `json:"key,omitempty"`
+	OptionNodeID       string   `json:"optionNodeId,omitempty"`
+	FileSetRef         string   `json:"fileSetRef,omitempty"`
+	SkillID            string   `json:"skillId,omitempty"`
+	InputRefs          []string `json:"inputRefs,omitempty"`
+	Block              string   `json:"block,omitempty"`
+	Direction          string   `json:"direction,omitempty"`
+	Amount             string   `json:"amount,omitempty"`
+	Kind               string   `json:"kind,omitempty"`
+	AuthorizationRef   string   `json:"authorizationRef,omitempty"`
+	PreconditionDigest string   `json:"preconditionDigest,omitempty"`
+}
+
+type agentStepOutput struct {
+	SchemaVersion    string           `json:"schemaVersion"`
+	SnapshotID       string           `json:"snapshotId"`
+	ContextDigest    string           `json:"contextDigest"`
+	GoalID           string           `json:"goalId"`
+	Status           string           `json:"status"`
+	Explanation      string           `json:"explanation"`
+	Action           json.RawMessage  `json:"action,omitempty"`
+	ContextRequest   json.RawMessage  `json:"contextRequest,omitempty"`
+	ExpectedEvidence []map[string]any `json:"expectedEvidence,omitempty"`
+	UserRequest      string           `json:"userRequest,omitempty"`
+}
+
+func inStrings(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeAgentAction(raw json.RawMessage) (agentAction, error) {
+	var action agentAction
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&action); err != nil {
+		return action, fmt.Errorf("action 非法: %w", err)
+	}
+	return action, nil
+}
+
+func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput, error) {
+	var out agentStepOutput
+	raw, err := extractJSONObject(content)
+	if err != nil {
+		return out, err
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return out, fmt.Errorf("AgentStep JSON 非法: %w", err)
+	}
+	if out.SchemaVersion != "v1" || out.SnapshotID != req.SnapshotID || out.ContextDigest != req.ContextDigest || out.GoalID != req.GoalID {
+		return out, fmt.Errorf("AgentStep 版本或上下文回显不一致")
+	}
+	if out.Explanation == "" {
+		return out, fmt.Errorf("AgentStep 缺少 explanation")
+	}
+	switch out.Status {
+	case "done", "need-context", "need-user", "blocked":
+		if len(out.Action) > 0 && string(out.Action) != "null" {
+			return out, fmt.Errorf("非 act 状态夹带 action")
+		}
+		if out.Status == "need-context" && len(out.ContextRequest) == 0 {
+			return out, fmt.Errorf("need-context 缺少 contextRequest")
+		}
+		return out, nil
+	case "act":
+		if len(out.Action) == 0 || string(out.Action) == "null" {
+			return out, fmt.Errorf("act 状态缺少 action")
+		}
+	default:
+		return out, fmt.Errorf("AgentStep status 非法")
+	}
+	action, err := decodeAgentAction(out.Action)
+	if err != nil {
+		return out, err
+	}
+	projected := func(id string) bool {
+		return id != "" && inStrings(req.ProjectedNodeIDs, id) && !inStrings(req.ForbiddenNodeIDs, id)
+	}
+	if action.TargetNodeID != "" && !projected(action.TargetNodeID) {
+		return out, fmt.Errorf("action 引用了未投影或禁止的 targetNodeId")
+	}
+	if action.OptionNodeID != "" && !projected(action.OptionNodeID) {
+		return out, fmt.Errorf("action 引用了未投影的 optionNodeId")
+	}
+	if inStrings(req.KnownSubmitNodeIDs, action.TargetNodeID) && action.Op != "commit-form" {
+		return out, fmt.Errorf("提交节点只能使用 commit-form")
+	}
+	safeKeys := []string{"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Escape", "Tab", "Space", "Backspace"}
+	switch action.Op {
+	case "click", "focus", "scroll-node":
+		if !projected(action.TargetNodeID) {
+			return out, fmt.Errorf("%s 缺少合法 targetNodeId", action.Op)
+		}
+	case "replace-text":
+		if !projected(action.TargetNodeID) || action.ValueRef == "" || action.ValueRef != req.ValueRef {
+			return out, fmt.Errorf("replace-text 引用了未授权目标或值句柄")
+		}
+		transform := action.Transform
+		if transform == "" {
+			transform = "identity"
+		}
+		if !inStrings(req.AllowedTransforms, transform) {
+			return out, fmt.Errorf("replace-text 使用了未授权转换")
+		}
+	case "press-key":
+		if !inStrings(safeKeys, action.Key) {
+			return out, fmt.Errorf("press-key 使用了非白名单按键")
+		}
+	case "select-native":
+		if !projected(action.TargetNodeID) || !projected(action.OptionNodeID) {
+			return out, fmt.Errorf("select-native 节点非法")
+		}
+	case "run-skill":
+		if !inStrings(req.Skills, action.SkillID) {
+			return out, fmt.Errorf("run-skill 引用了未公布技能")
+		}
+		for _, ref := range action.InputRefs {
+			if ref != req.ValueRef {
+				return out, fmt.Errorf("run-skill 引用了未授权句柄")
+			}
+		}
+	case "scroll-page":
+		if (action.Direction != "up" && action.Direction != "down") || (action.Amount != "small" && action.Amount != "page") {
+			return out, fmt.Errorf("scroll-page 参数非法")
+		}
+	case "set-files":
+		return out, fmt.Errorf("第一版 agent_step 不开放文件动作")
+	case "commit-form":
+		return out, fmt.Errorf("agent_step 第一版不生成不可逆动作")
+	default:
+		return out, fmt.Errorf("未知 action op %q", action.Op)
+	}
+	return out, nil
+}
 
 // logDropped 幻觉过滤留痕。被丢弃的选择器/列名此前零日志:既没法监控各上游的幻觉率
 // (日志里的 request_id 可与 ai_requests 表的 upstream/model 对齐),也没法区分
@@ -366,6 +514,47 @@ func Specs() []Spec {
 					})
 				}
 				return map[string]any{"accepted": out.Accepted && !blocking, "issues": issues}, nil
+			},
+		},
+		{
+			Name:   "repair_input_plan",
+			NewReq: func() Request { return &RepairInputPlanReq{} },
+			Post: func(req Request, content string) (any, error) {
+				r := req.(*RepairInputPlanReq)
+				var out compiledInputPlan
+				if err := ParseAIJSONStrict(content, &out,
+					"schemaVersion", "sourceHash", "sourceKind", "entityName", "exclusions", "confidence", "explanation"); err != nil {
+					return nil, err
+				}
+				var probe map[string]json.RawMessage
+				raw, _ := extractJSONObject(content)
+				if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+					return nil, err
+				}
+				keys := []string{"records"}
+				if r.SourceKind == "json" {
+					keys = []string{"recordPointer", "recordMode", "fields"}
+				}
+				for _, key := range keys {
+					if _, ok := probe[key]; !ok {
+						return nil, fmt.Errorf("AI 输出缺少必填字段 %q", key)
+					}
+				}
+				if err := validateCompiledInput(&CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash}, &out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+		},
+		{
+			Name:   "agent_step",
+			NewReq: func() Request { return &AgentStepReq{} },
+			Post: func(req Request, content string) (any, error) {
+				out, err := validateAgentStepOutput(req.(*AgentStepReq), content)
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
 			},
 		},
 		{

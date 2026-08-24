@@ -197,6 +197,143 @@ type AuditInputPlanReq struct {
 	Plan       json.RawMessage `json:"plan"`
 }
 
+type RepairInputPlanReq struct {
+	Meta
+	SourceKind string          `json:"sourceKind"`
+	SourceText string          `json:"sourceText"`
+	SourceHash string          `json:"sourceHash"`
+	Plan       json.RawMessage `json:"plan"`
+	Audit      json.RawMessage `json:"audit"`
+}
+
+func (r *RepairInputPlanReq) Validate() error {
+	base := &AuditInputPlanReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash, Plan: r.Plan}
+	if err := base.Validate(); err != nil {
+		return err
+	}
+	if len(r.Audit) == 0 || !json.Valid(r.Audit) || len(r.Audit) > 64*1024 {
+		return fmt.Errorf("audit 必须是合法且不超过 64 KiB 的 JSON")
+	}
+	return nil
+}
+
+type AgentHistoryItem struct {
+	Action  string `json:"action"`
+	Verdict string `json:"verdict"`
+}
+
+// AgentStepReq 只携带页面脱敏投影、opaque 值句柄和最小语义提示，绝不携带 Vault 原值。
+// ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
+type AgentStepReq struct {
+	Meta
+	SnapshotID         string             `json:"snapshotId"`
+	ContextDigest      string             `json:"contextDigest"`
+	GoalID             string             `json:"goalId"`
+	GoalKind           string             `json:"goalKind"`
+	FieldSemanticName  string             `json:"fieldSemanticName,omitempty"`
+	ValueRef           string             `json:"valueRef,omitempty"`
+	ValueShape         string             `json:"valueShape,omitempty"`
+	ValueHint          string             `json:"valueHint,omitempty"`
+	AllowedTransforms  []string           `json:"allowedTransforms,omitempty"`
+	RiskLimit          string             `json:"riskLimit"`
+	Projection         string             `json:"projection"`
+	ProjectedNodeIDs   []string           `json:"projectedNodeIds"`
+	AllowedRootIDs     []string           `json:"allowedRootIds,omitempty"`
+	ForbiddenNodeIDs   []string           `json:"forbiddenNodeIds,omitempty"`
+	KnownSubmitNodeIDs []string           `json:"knownSubmitNodeIds,omitempty"`
+	Skills             []string           `json:"skills,omitempty"`
+	History            []AgentHistoryItem `json:"history,omitempty"`
+	CallIndex          int                `json:"callIndex"`
+}
+
+func checkStringList(name string, values []string, max, maxLen int) error {
+	if len(values) > max {
+		return fmt.Errorf("%s 数量超限(%d)", name, max)
+	}
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" {
+			return fmt.Errorf("%s 含空值", name)
+		}
+		if seen[value] {
+			return fmt.Errorf("%s 含重复值", name)
+		}
+		seen[value] = true
+		if err := capStr(name, value, maxLen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *AgentStepReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"snapshotId": r.SnapshotID, "contextDigest": r.ContextDigest, "goalId": r.GoalID,
+		"goalKind": r.GoalKind, "riskLimit": r.RiskLimit,
+	} {
+		if value == "" {
+			return fmt.Errorf("%s 不能为空", name)
+		}
+		if err := capStr(name, value, 200); err != nil {
+			return err
+		}
+	}
+	if r.RiskLimit != "L0" && r.RiskLimit != "L1" && r.RiskLimit != "L2" && r.RiskLimit != "L3" {
+		return fmt.Errorf("riskLimit 非法")
+	}
+	if len(r.Projection) == 0 || len(r.Projection) > 512*1024 {
+		return fmt.Errorf("projection 为空或超过 512 KiB")
+	}
+	if err := checkStringList("projectedNodeIds", r.ProjectedNodeIDs, 20000, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("allowedRootIds", r.AllowedRootIDs, 1000, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("forbiddenNodeIds", r.ForbiddenNodeIDs, 2000, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("knownSubmitNodeIds", r.KnownSubmitNodeIDs, 200, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("skills", r.Skills, 100, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("allowedTransforms", r.AllowedTransforms, 20, 100); err != nil {
+		return err
+	}
+	if err := capStr("fieldSemanticName", r.FieldSemanticName, 200); err != nil {
+		return err
+	}
+	if err := capStr("valueRef", r.ValueRef, 300); err != nil {
+		return err
+	}
+	if err := capStr("valueShape", r.ValueShape, 100); err != nil {
+		return err
+	}
+	if err := capStr("valueHint", r.ValueHint, 300); err != nil {
+		return err
+	}
+	if len(r.History) > 20 {
+		return fmt.Errorf("history 数量超限(20)")
+	}
+	for _, item := range r.History {
+		if err := capStr("history.action", item.Action, 300); err != nil {
+			return err
+		}
+		if err := capStr("history.verdict", item.Verdict, 100); err != nil {
+			return err
+		}
+	}
+	if r.CallIndex < 0 || r.CallIndex > 20 {
+		return fmt.Errorf("callIndex 非法")
+	}
+	return nil
+}
+
 func (r *AuditInputPlanReq) Validate() error {
 	base := &CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash}
 	if err := base.Validate(); err != nil {
