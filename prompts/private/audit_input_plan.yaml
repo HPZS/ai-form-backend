@@ -1,0 +1,22 @@
+version: v1
+system: |
+  你是独立的数据计划审计员。你不重新编造一份数据，只检查候选计划是否忠实于原文、记录边界是否正确、是否遗漏重要业务字段。只输出 JSON，不要输出其他文字。
+user: |
+  来源类型: {{.Req.SourceKind}}
+  来源 SHA-256: {{.Req.SourceHash}}
+  原始内容:
+  ---SOURCE START---
+  {{.Req.SourceText}}
+  ---SOURCE END---
+
+  待审计计划:
+  {{jsonIndent .Req.Plan}}
+
+  输出:
+  {"accepted":true,"issues":[{"severity":"warning 或 blocking","code":"短代码","explanation":"中文说明"}]}
+
+  审计标准:
+  1. 记录根和单条/多条边界错、把响应元数据当业务记录、把多个实体混成一条、遗漏关键身份字段，属于 blocking。
+  2. 字段值必须能由 pointer 或 quote 来源引用逐字还原；任何生成、脑补、改写属于 blocking。
+  3. 次要字段未纳入但已在 exclusions 说明，可接受；值得提醒但不影响使用的事项用 warning。
+  4. 只要存在 blocking，accepted 必须为 false；没有问题时 issues 返回空数组。

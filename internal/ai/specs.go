@@ -1,9 +1,10 @@
 // ai-form-backend - AGPL-3.0
-// 12 个能力的输出解析与确定性校验,镜像插件 utils/ai.ts 的逻辑:
+// AI 能力的输出解析与确定性校验,镜像插件 utils/ai.ts 的逻辑:
 // 丢弃模型幻觉出的不存在的 selector/列名/字段序号(插件端还有最后一道防线)。
 package ai
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -50,6 +51,226 @@ type mappedColumn struct {
 	Column     *string `json:"column"`
 }
 
+type inputExclusion struct {
+	SourceRef string `json:"sourceRef"`
+	Reason    string `json:"reason"`
+}
+
+type jsonInputField struct {
+	Name        string  `json:"name"`
+	Pointer     string  `json:"pointer"`
+	Confidence  float64 `json:"confidence"`
+	Explanation string  `json:"explanation"`
+}
+
+type textQuoteRef struct {
+	Quote      string `json:"quote"`
+	Occurrence int    `json:"occurrence"`
+}
+
+type textInputField struct {
+	Name        string         `json:"name"`
+	SourceRefs  []textQuoteRef `json:"sourceRefs"`
+	Confidence  float64        `json:"confidence"`
+	Explanation string         `json:"explanation"`
+}
+
+type textInputRecord struct {
+	RecordID string           `json:"recordId"`
+	Fields   []textInputField `json:"fields"`
+}
+
+type compiledInputPlan struct {
+	SchemaVersion string            `json:"schemaVersion"`
+	SourceHash    string            `json:"sourceHash"`
+	SourceKind    string            `json:"sourceKind"`
+	EntityName    string            `json:"entityName"`
+	RecordPointer string            `json:"recordPointer"`
+	RecordMode    string            `json:"recordMode"`
+	Fields        []jsonInputField  `json:"fields"`
+	Records       []textInputRecord `json:"records"`
+	Exclusions    []inputExclusion  `json:"exclusions"`
+	Confidence    float64           `json:"confidence"`
+	Explanation   string            `json:"explanation"`
+}
+
+func decodePointerPart(part string) (string, error) {
+	for i := 0; i < len(part); i++ {
+		if part[i] != '~' {
+			continue
+		}
+		if i+1 >= len(part) || (part[i+1] != '0' && part[i+1] != '1') {
+			return "", fmt.Errorf("JSON Pointer 含非法转义")
+		}
+		i++
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~"), nil
+}
+
+func resolveInputPointer(root any, pointer string) (any, bool, error) {
+	if pointer == "" {
+		return root, true, nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, false, fmt.Errorf("JSON Pointer 必须以 / 开头")
+	}
+	current := root
+	for _, raw := range strings.Split(pointer[1:], "/") {
+		key, err := decodePointerPart(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		switch node := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = node[key]
+			if !ok {
+				return nil, false, nil
+			}
+		case []any:
+			if key == "" || (len(key) > 1 && key[0] == '0') {
+				return nil, false, nil
+			}
+			idx, err := strconv.Atoi(key)
+			if err != nil || idx < 0 || idx >= len(node) {
+				return nil, false, nil
+			}
+			current = node[idx]
+		default:
+			return nil, false, nil
+		}
+	}
+	return current, true, nil
+}
+
+func scalarInputValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	if items, ok := value.([]any); ok {
+		for _, item := range items {
+			if item != nil {
+				if _, complex := item.(map[string]any); complex {
+					return false
+				}
+				if _, nested := item.([]any); nested {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	_, object := value.(map[string]any)
+	return !object
+}
+
+func quoteOccurrenceExists(source, quote string, occurrence int) bool {
+	if quote == "" || occurrence < 0 {
+		return false
+	}
+	from := 0
+	for i := 0; i <= occurrence; i++ {
+		at := strings.Index(source[from:], quote)
+		if at < 0 {
+			return false
+		}
+		from += at + len(quote)
+	}
+	return true
+}
+
+func validateCompiledInput(req *CompileInputReq, out *compiledInputPlan) error {
+	if out.SchemaVersion != "v1" {
+		return fmt.Errorf("schemaVersion 必须是 v1")
+	}
+	if out.SourceHash != req.SourceHash || out.SourceKind != req.SourceKind {
+		return fmt.Errorf("AI 返回的来源标识与请求不一致")
+	}
+	if strings.TrimSpace(out.EntityName) == "" {
+		return fmt.Errorf("entityName 不能为空")
+	}
+	if out.Confidence < 0 || out.Confidence > 1 {
+		return fmt.Errorf("confidence 必须在 0 到 1 之间")
+	}
+	if req.SourceKind == "json" {
+		var source any
+		if err := json.Unmarshal([]byte(req.SourceText), &source); err != nil {
+			return fmt.Errorf("sourceKind=json 但来源不是合法 JSON: %w", err)
+		}
+		selected, found, err := resolveInputPointer(source, out.RecordPointer)
+		if err != nil || !found {
+			return fmt.Errorf("recordPointer 不存在或无效")
+		}
+		var records []any
+		switch out.RecordMode {
+		case "object":
+			records = []any{selected}
+		case "array":
+			var ok bool
+			records, ok = selected.([]any)
+			if !ok {
+				return fmt.Errorf("recordMode=array 但来源节点不是数组")
+			}
+		default:
+			return fmt.Errorf("recordMode 必须是 object 或 array")
+		}
+		if len(records) == 0 || len(out.Fields) == 0 || len(out.Fields) > 100 {
+			return fmt.Errorf("记录或字段为空/超限")
+		}
+		names := map[string]bool{}
+		for _, field := range out.Fields {
+			name := strings.TrimSpace(field.Name)
+			if name == "" || names[name] {
+				return fmt.Errorf("字段名为空或重复")
+			}
+			names[name] = true
+			seen := false
+			for _, record := range records {
+				if _, ok := record.(map[string]any); !ok {
+					return fmt.Errorf("记录根不是对象")
+				}
+				value, found, err := resolveInputPointer(record, field.Pointer)
+				if err != nil {
+					return err
+				}
+				if found {
+					seen = true
+					if !scalarInputValue(value) {
+						return fmt.Errorf("字段 %s 仍指向复杂对象", name)
+					}
+				}
+			}
+			if !seen {
+				return fmt.Errorf("字段 %s 的来源不存在", name)
+			}
+		}
+		return nil
+	}
+
+	if len(out.Records) == 0 || len(out.Records) > 5000 {
+		return fmt.Errorf("records 为空或超限")
+	}
+	for _, record := range out.Records {
+		if len(record.Fields) == 0 || len(record.Fields) > 100 {
+			return fmt.Errorf("文本记录字段为空或超限")
+		}
+		names := map[string]bool{}
+		for _, field := range record.Fields {
+			name := strings.TrimSpace(field.Name)
+			if name == "" || names[name] || len(field.SourceRefs) == 0 {
+				return fmt.Errorf("文本字段名为空、重复或缺少来源引用")
+			}
+			names[name] = true
+			for _, ref := range field.SourceRefs {
+				if !quoteOccurrenceExists(req.SourceText, ref.Quote, ref.Occurrence) {
+					return fmt.Errorf("文本字段 %s 引用了不存在的原文", name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func truncRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -61,6 +282,92 @@ func truncRunes(s string, n int) string {
 // Specs 返回全部能力规格,按注册顺序即路由顺序。
 func Specs() []Spec {
 	return []Spec{
+		{
+			Name:   "compile_input",
+			NewReq: func() Request { return &CompileInputReq{} },
+			Post: func(req Request, content string) (any, error) {
+				r := req.(*CompileInputReq)
+				var out compiledInputPlan
+				if err := ParseAIJSONStrict(content, &out,
+					"schemaVersion", "sourceHash", "sourceKind", "entityName", "exclusions", "confidence", "explanation"); err != nil {
+					return nil, err
+				}
+				if r.SourceKind == "json" {
+					var probe map[string]json.RawMessage
+					raw, _ := extractJSONObject(content)
+					if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+						return nil, err
+					}
+					for _, key := range []string{"recordPointer", "recordMode", "fields"} {
+						if _, ok := probe[key]; !ok {
+							return nil, fmt.Errorf("AI 输出缺少必填字段 %q", key)
+						}
+					}
+				} else {
+					var probe map[string]json.RawMessage
+					raw, _ := extractJSONObject(content)
+					if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+						return nil, err
+					}
+					if _, ok := probe["records"]; !ok {
+						return nil, fmt.Errorf("AI 输出缺少必填字段 %q", "records")
+					}
+				}
+				if err := validateCompiledInput(r, &out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+		},
+		{
+			Name:   "audit_input_plan",
+			NewReq: func() Request { return &AuditInputPlanReq{} },
+			Post: func(req Request, content string) (any, error) {
+				r := req.(*AuditInputPlanReq)
+				var plan compiledInputPlan
+				if err := json.Unmarshal(r.Plan, &plan); err != nil {
+					return nil, fmt.Errorf("plan 无法解析: %w", err)
+				}
+				if err := validateCompiledInput(&CompileInputReq{
+					Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash,
+				}, &plan); err != nil {
+					return nil, fmt.Errorf("待审计计划未通过来源校验: %w", err)
+				}
+				var out struct {
+					Accepted bool `json:"accepted"`
+					Issues   []struct {
+						Severity    string `json:"severity"`
+						Code        string `json:"code"`
+						Explanation string `json:"explanation"`
+					} `json:"issues"`
+				}
+				if err := ParseAIJSONStrict(content, &out, "accepted", "issues"); err != nil {
+					return nil, err
+				}
+				if len(out.Issues) > 50 {
+					return nil, fmt.Errorf("审计问题数量超限")
+				}
+				blocking := false
+				issues := make([]map[string]string, 0, len(out.Issues))
+				for _, issue := range out.Issues {
+					if issue.Severity != "warning" && issue.Severity != "blocking" {
+						return nil, fmt.Errorf("审计问题 severity 非法")
+					}
+					if strings.TrimSpace(issue.Code) == "" || strings.TrimSpace(issue.Explanation) == "" {
+						return nil, fmt.Errorf("审计问题缺少 code 或 explanation")
+					}
+					if issue.Severity == "blocking" {
+						blocking = true
+					}
+					issues = append(issues, map[string]string{
+						"severity":    issue.Severity,
+						"code":        truncRunes(issue.Code, 60),
+						"explanation": truncRunes(issue.Explanation, 300),
+					})
+				}
+				return map[string]any{"accepted": out.Accepted && !blocking, "issues": issues}, nil
+			},
+		},
 		{
 			Name:   "assess_page",
 			NewReq: func() Request { return &AssessPageReq{} },

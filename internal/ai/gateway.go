@@ -1,8 +1,9 @@
 // ai-form-backend - AGPL-3.0
 // AI 网关流水线(技术方案 v3 §5.6/§6):
-//   严格解码 → 幂等闸门(唯一索引原子插入 pending + 90s 租约,可抢占接管)
-//   → 订阅/余额预检 → 渲染提示词 → 上游候选链调用 → 解析(失败同链重试一次)
-//   → 扣费与状态落定同事务 → 响应含 credits 并写入 24h 幂等缓存。
+//
+//	严格解码 → 幂等闸门(唯一索引原子插入 pending + 90s 租约,可抢占接管)
+//	→ 订阅/余额预检 → 渲染提示词 → 上游候选链调用 → 解析(失败同链重试一次)
+//	→ 扣费与状态落定同事务 → 响应含 credits 并写入 24h 幂等缓存。
 package ai
 
 import (
@@ -24,8 +25,10 @@ import (
 )
 
 const (
-	leaseTTL     = 90 * time.Second
-	maxBodyBytes = 256 << 10
+	leaseTTL = 90 * time.Second
+	// 智能数据审计会同时携带原文与来源计划；原文自身仍由 CompileInputReq 限到 160K，
+	// 这里留出 JSON 转义和计划引用的空间，避免合法请求在严格解码之前被 256K 闸门截断。
+	maxBodyBytes = 1 << 20
 	// 整条调用链(含重试与上游切换)的总时限,必须短于租约:
 	// 否则请求还在跑、租约已被别人接管,白白多调一次模型
 	callChainTimeout = 80 * time.Second

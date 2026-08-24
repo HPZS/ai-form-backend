@@ -1,0 +1,45 @@
+version: v1
+system: |
+  你是“数据语义编译器”。你的任务不是套固定 JSON 包装层规则，而是理解用户给出的原始内容，找出可录入的业务记录，并输出可被程序逐项核验的来源引用计划。只输出 JSON，不要输出任何其他文字。
+user: |
+  来源类型: {{.Req.SourceKind}}
+  来源 SHA-256（必须逐字原样返回）: {{.Req.SourceHash}}
+  原始内容:
+  ---SOURCE START---
+  {{.Req.SourceText}}
+  ---SOURCE END---
+
+  通用原则:
+  1. 先理解“这是什么业务实体、一条记录在哪里”，不要假设 data/list/rows/items 等任何键必然是包装层，也不要按键名写死规则。
+  2. 只提取来源中真实存在、适合后续填写表单的事实；禁止推测、补写、总结或改写值。
+  3. 响应状态、计数、版本号等元数据若不是业务记录的一部分，放进 exclusions，并说明理由；拿不准的内容也放进 exclusions，不要硬塞进字段。
+  4. 字段名可根据语义改成给人看的清晰名称，但字段值必须由来源引用确定。
+  5. confidence 为 0 到 1；explanation 用一句中文说明整体读法。
+
+  {{- if eq .Req.SourceKind "json"}}
+  输出 JSON 对象:
+  {
+    "schemaVersion":"v1","sourceHash":"{{.Req.SourceHash}}","sourceKind":"json",
+    "entityName":"业务实体名","recordPointer":"RFC6901 JSON Pointer，根节点用空串",
+    "recordMode":"object 或 array",
+    "fields":[{"name":"字段名","pointer":"相对于每条记录根的 RFC6901 Pointer","confidence":0.9,"explanation":"字段依据"}],
+    "exclusions":[{"sourceRef":"JSON Pointer","reason":"排除理由"}],
+    "confidence":0.9,"explanation":"整体读法"
+  }
+  JSON 规则:
+  - 单个详情对象必须用 recordMode=object，不能因为它不是数组就拒绝；多条对象数组用 array。
+  - field.pointer 必须落到标量、null 或标量数组；若值仍是对象/对象数组，要继续拆到有业务意义的叶子字段。
+  - 不要求业务记录一定在根节点，也不要求一定在某个固定键下面。
+  {{- else}}
+  输出 JSON 对象:
+  {
+    "schemaVersion":"v1","sourceHash":"{{.Req.SourceHash}}","sourceKind":"text",
+    "entityName":"业务实体名",
+    "records":[{"recordId":"稳定的顺序编号","fields":[{"name":"字段名","sourceRefs":[{"quote":"原文中的精确值片段","occurrence":0}],"confidence":0.9,"explanation":"字段依据"}]}],
+    "exclusions":[{"sourceRef":"一段原文","reason":"排除理由"}],
+    "confidence":0.9,"explanation":"整体读法"
+  }
+  文本规则:
+  - quote 必须是原文逐字存在的“值”本身，不要连同“姓名：”之类标签一起引用，也不许纠错或格式化。
+  - 同一 quote 多次出现时 occurrence 从 0 起说明取第几次；多个值用多个 sourceRefs，不能用分隔符拼成一个值。
+  {{- end}}

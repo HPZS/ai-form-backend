@@ -11,6 +11,8 @@ type CapMeta struct {
 // CapabilityMetas 与 Specs() 同源同序的能力清单;新增能力时两处同时登记。
 func CapabilityMetas() []CapMeta {
 	return []CapMeta{
+		{"compile_input", "智能数据编译", "理解 JSON、大白话等输入，生成带来源引用的可验证记录计划"},
+		{"audit_input_plan", "数据计划复核", "独立复核数据编译结果的语义、边界与重要遗漏"},
 		{"assess_page", "页面甄别", "判断当前页面是可录入的表单还是搜索栏,避免把数据填进搜索框"},
 		{"analyze_form", "表单识别", "解析页面表单的字段结构与按钮(核心计费点)"},
 		{"pick_open_button", "找开表单按钮", "在列表页上挑出「新增/添加」按钮,自动打开录入表单"},

@@ -68,6 +68,58 @@ func TestRequiredKeysPresentPasses(t *testing.T) {
 	}
 }
 
+func TestCompileInputAcceptsSingleNestedDetailAndRejectsPhantomReferences(t *testing.T) {
+	specs := map[string]Spec{}
+	for _, s := range Specs() {
+		specs[s.Name] = s
+	}
+	req := &CompileInputReq{
+		Meta:       Meta{RequestID: "11111111-1111-4111-8111-111111111111"},
+		SourceKind: "json", SourceHash: strings.Repeat("a", 64),
+		SourceText: `{"id":"outer","data":{"id":"article-1","title":"暑假过半","author":"方嘉琳"}}`,
+	}
+	valid := `{
+		"schemaVersion":"v1","sourceHash":"` + req.SourceHash + `","sourceKind":"json","entityName":"文章",
+		"recordPointer":"/data","recordMode":"object",
+		"fields":[{"name":"标题","pointer":"/title","confidence":1,"explanation":"文章标题"}],
+		"exclusions":[],"confidence":0.98,"explanation":"data 是一条文章详情"
+	}`
+	if _, err := specs["compile_input"].Post(req, valid); err != nil {
+		t.Fatalf("单个嵌套详情应通过: %v", err)
+	}
+
+	phantom := strings.Replace(valid, `"/title"`, `"/not-exists"`, 1)
+	if _, err := specs["compile_input"].Post(req, phantom); err == nil || !strings.Contains(err.Error(), "来源不存在") {
+		t.Fatalf("不存在的来源引用必须被拦截,实际: %v", err)
+	}
+	wrongHash := strings.Replace(valid, req.SourceHash, strings.Repeat("b", 64), 1)
+	if _, err := specs["compile_input"].Post(req, wrongHash); err == nil || !strings.Contains(err.Error(), "来源标识") {
+		t.Fatalf("来源哈希不一致必须被拦截,实际: %v", err)
+	}
+}
+
+func TestAuditInputBlockingIssueCannotBeAccepted(t *testing.T) {
+	var spec Spec
+	for _, s := range Specs() {
+		if s.Name == "audit_input_plan" {
+			spec = s
+		}
+	}
+	hash := strings.Repeat("a", 64)
+	plan := `{"schemaVersion":"v1","sourceHash":"` + hash + `","sourceKind":"text","entityName":"客户","records":[{"recordId":"1","fields":[{"name":"姓名","sourceRefs":[{"quote":"张三","occurrence":0}],"confidence":1,"explanation":"原文"}]}],"exclusions":[],"confidence":1,"explanation":"一条客户"}`
+	req := &AuditInputPlanReq{
+		Meta: Meta{RequestID: "11111111-1111-4111-8111-111111111111"}, SourceKind: "text",
+		SourceText: "客户姓名张三", SourceHash: hash, Plan: []byte(plan),
+	}
+	out, err := spec.Post(req, `{"accepted":true,"issues":[{"severity":"blocking","code":"BOUNDARY","explanation":"记录边界错误"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.(map[string]any)["accepted"] != false {
+		t.Fatal("存在 blocking 问题时服务端必须强制 accepted=false")
+	}
+}
+
 // generate_field 是纯文本能力,模型常把内容用 ``` 包起来:
 // 不剥围栏,反引号会原样被填进业务系统的表单
 func TestGenerateFieldStripsFence(t *testing.T) {

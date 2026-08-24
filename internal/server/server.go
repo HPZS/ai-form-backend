@@ -50,7 +50,9 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 //
 //	与 rev4 同形:老后端上是 404,只影响这一个能力;插件拿不到就退回确定性基线
 //	(有效果的步骤全留)并落日志,链啰嗦一点,不会错。
-const APIRevision = 6
+//
+// rev7: 新增 compile_input 与 audit_input_plan，支持 AI 原生的任意文本/JSON 数据接收。
+const APIRevision = 7
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

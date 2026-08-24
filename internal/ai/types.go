@@ -1,9 +1,10 @@
 // ai-form-backend - AGPL-3.0
-// 12 个 AI 能力的请求结构与输入上限校验。与插件 utils/ai.ts 的函数一一对应;
+// AI 能力的请求结构与输入上限校验。与插件 utils/ai.ts 的函数一一对应;
 // 上限规格见技术方案 v3 §6.4(插件端先截断,服务端二次校验,超限直接 400)。
 package ai
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -33,12 +34,12 @@ type Request interface {
 // ===== 公共子结构 =====
 
 type FormFieldBrief struct {
-	Index       int      `json:"index"`
-	Label       string   `json:"label"`
-	Tag         string   `json:"tag"`
-	Type        string   `json:"type"`
-	Name        string   `json:"name"`
-	Placeholder string   `json:"placeholder"`
+	Index       int    `json:"index"`
+	Label       string `json:"label"`
+	Tag         string `json:"tag"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Placeholder string `json:"placeholder"`
 	// Context 字段周边的页面文字线索(分组标题/相邻文本,"|"分隔,越靠前离控件越近)。
 	// 自研组件库页面常提不出 label(Input/file),匹配全靠它判断字段用途——
 	// 这是页面上真实存在的文字,不是编造的名字。
@@ -156,7 +157,59 @@ func checkRows(name string, rows []map[string]string, maxRows, cellMax int) erro
 	return nil
 }
 
-// ===== 12 个能力的请求结构 =====
+// ===== 能力请求结构 =====
+
+const inputSourceMaxRunes = 160 * 1024
+
+// CompileInputReq 不携带任何业务包装层规则。sourceKind 只说明语法事实，
+// “哪里是一条记录、哪些叶子是字段”全部由模型在来源引用计划里表达。
+type CompileInputReq struct {
+	Meta
+	SourceKind string `json:"sourceKind"`
+	SourceText string `json:"sourceText"`
+	SourceHash string `json:"sourceHash"`
+}
+
+func (r *CompileInputReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	if r.SourceKind != "json" && r.SourceKind != "text" {
+		return fmt.Errorf("sourceKind 必须是 json 或 text")
+	}
+	if r.SourceText == "" {
+		return fmt.Errorf("sourceText 不能为空")
+	}
+	if err := capStr("sourceText", r.SourceText, inputSourceMaxRunes); err != nil {
+		return err
+	}
+	if len(r.SourceHash) != 64 {
+		return fmt.Errorf("sourceHash 必须是 SHA-256 十六进制字符串")
+	}
+	return nil
+}
+
+type AuditInputPlanReq struct {
+	Meta
+	SourceKind string          `json:"sourceKind"`
+	SourceText string          `json:"sourceText"`
+	SourceHash string          `json:"sourceHash"`
+	Plan       json.RawMessage `json:"plan"`
+}
+
+func (r *AuditInputPlanReq) Validate() error {
+	base := &CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash}
+	if err := base.Validate(); err != nil {
+		return err
+	}
+	if len(r.Plan) == 0 || !json.Valid(r.Plan) {
+		return fmt.Errorf("plan 必须是合法 JSON")
+	}
+	if len(r.Plan) > 256*1024 {
+		return fmt.Errorf("plan 超长")
+	}
+	return nil
+}
 
 type AssessPageReq struct {
 	Meta
