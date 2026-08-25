@@ -277,13 +277,15 @@ type VisualCandidate struct {
 
 type AgentVisualGroundReq struct {
 	Meta
-	SnapshotID    string            `json:"snapshotId"`
-	ContextDigest string            `json:"contextDigest"`
-	GoalID        string            `json:"goalId"`
-	RegionID      string            `json:"regionId"`
-	ImageDataURL  string            `json:"imageDataUrl"`
-	Candidates    []VisualCandidate `json:"candidates"`
-	MaskPolicyRef string            `json:"maskPolicyRef"`
+	SnapshotID       string            `json:"snapshotId"`
+	ContextDigest    string            `json:"contextDigest"`
+	GoalID           string            `json:"goalId"`
+	GoalKind         string            `json:"goalKind"`
+	GoalSemanticName string            `json:"goalSemanticName"`
+	RegionID         string            `json:"regionId"`
+	ImageDataURL     string            `json:"imageDataUrl"`
+	Candidates       []VisualCandidate `json:"candidates"`
+	MaskPolicyRef    string            `json:"maskPolicyRef"`
 }
 
 func (r *AgentVisualGroundReq) Validate() error {
@@ -291,7 +293,8 @@ func (r *AgentVisualGroundReq) Validate() error {
 		return err
 	}
 	for name, value := range map[string]string{
-		"snapshotId": r.SnapshotID, "contextDigest": r.ContextDigest, "goalId": r.GoalID, "regionId": r.RegionID,
+		"snapshotId": r.SnapshotID, "contextDigest": r.ContextDigest, "goalId": r.GoalID,
+		"goalKind": r.GoalKind, "goalSemanticName": r.GoalSemanticName, "regionId": r.RegionID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s 不能为空", name)

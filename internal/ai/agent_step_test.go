@@ -65,7 +65,7 @@ func TestAuditAgentCheckpointOutput(t *testing.T) {
 func TestAgentVisualGroundIsStrictlyCandidateBound(t *testing.T) {
 	req := &AgentVisualGroundReq{
 		Meta:       Meta{RequestID: "22222222-2222-4222-8222-222222222222"},
-		SnapshotID: "s1", ContextDigest: "ctx1", GoalID: "g1", RegionID: "region:n1",
+		SnapshotID: "s1", ContextDigest: "ctx1", GoalID: "g1", GoalKind: "set-field-value", GoalSemanticName: "发布时间", RegionID: "region:n1",
 		ImageDataURL: "data:image/jpeg;base64,AAE=", MaskPolicyRef: "sensitive-controls-v1",
 		Candidates: []VisualCandidate{{NodeID: "n1", Label: "日期按钮", X: 1, Y: 1, Width: 20, Height: 10}},
 	}
