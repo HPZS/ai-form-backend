@@ -211,6 +211,243 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 	return out, nil
 }
 
+type agentRowPlanStepOutput struct {
+	GoalID           string           `json:"goalId"`
+	Action           json.RawMessage  `json:"action"`
+	ExpectedEvidence []map[string]any `json:"expectedEvidence,omitempty"`
+}
+
+type agentRowPlanOutput struct {
+	SchemaVersion   string                   `json:"schemaVersion"`
+	SnapshotID      string                   `json:"snapshotId"`
+	ContextDigest   string                   `json:"contextDigest"`
+	RowPlanID       string                   `json:"rowPlanId"`
+	Status          string                   `json:"status"`
+	Explanation     string                   `json:"explanation"`
+	Steps           []agentRowPlanStepOutput `json:"steps,omitempty"`
+	DeferredGoalIDs []string                 `json:"deferredGoalIds,omitempty"`
+	ContextRequest  json.RawMessage          `json:"contextRequest,omitempty"`
+	UserRequest     string                   `json:"userRequest,omitempty"`
+}
+
+type agentRowAction struct {
+	Op            string   `json:"op"`
+	TargetNodeID  string   `json:"targetNodeId,omitempty"`
+	ValueBinding  string   `json:"valueBinding,omitempty"`
+	Transform     string   `json:"transform,omitempty"`
+	Key           string   `json:"key,omitempty"`
+	OptionNodeID  string   `json:"optionNodeId,omitempty"`
+	SkillID       string   `json:"skillId,omitempty"`
+	InputBindings []string `json:"inputBindings,omitempty"`
+}
+
+func decodeAgentRowAction(raw json.RawMessage) (agentRowAction, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return agentRowAction{}, fmt.Errorf("行计划 action 非法: %w", err)
+	}
+	var op string
+	if err := json.Unmarshal(probe["op"], &op); err != nil {
+		return agentRowAction{}, fmt.Errorf("行计划 action 缺少 op")
+	}
+	allowedByOp := map[string][]string{
+		"click":         {"op", "targetNodeId"},
+		"focus":         {"op", "targetNodeId"},
+		"replace-text":  {"op", "targetNodeId", "valueBinding", "transform"},
+		"press-key":     {"op", "key", "targetNodeId"},
+		"select-native": {"op", "targetNodeId", "optionNodeId"},
+		"run-skill":     {"op", "skillId", "targetNodeId", "inputBindings"},
+	}
+	allowed, ok := allowedByOp[op]
+	if !ok {
+		return agentRowAction{}, fmt.Errorf("行计划包含禁用或未知 action op %q", op)
+	}
+	for key := range probe {
+		if !inStrings(allowed, key) {
+			return agentRowAction{}, fmt.Errorf("行计划 action 包含 unknown field %q", key)
+		}
+	}
+	var action agentRowAction
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&action); err != nil {
+		return action, fmt.Errorf("行计划 action 非法: %w", err)
+	}
+	return action, nil
+}
+
+func validateAgentRowPlanOutput(req *AgentRowPlanReq, content string) (agentRowPlanOutput, error) {
+	var out agentRowPlanOutput
+	raw, err := extractJSONObject(content)
+	if err != nil {
+		return out, err
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return out, fmt.Errorf("AgentRowPlan JSON 非法: %w", err)
+	}
+	if out.SchemaVersion != "v1" || out.SnapshotID != req.SnapshotID || out.ContextDigest != req.ContextDigest || out.RowPlanID != req.RowPlanID {
+		return out, fmt.Errorf("AgentRowPlan 版本或上下文回显不一致")
+	}
+	if strings.TrimSpace(out.Explanation) == "" {
+		return out, fmt.Errorf("AgentRowPlan 缺少 explanation")
+	}
+	if out.Status != "planned" {
+		if len(out.Steps) > 0 {
+			return out, fmt.Errorf("非 planned 状态夹带 steps")
+		}
+		if len(out.DeferredGoalIDs) > 0 {
+			return out, fmt.Errorf("非 planned 状态夹带 deferredGoalIds")
+		}
+		switch out.Status {
+		case "need-user":
+			if strings.TrimSpace(out.UserRequest) == "" || len(out.ContextRequest) > 0 {
+				return out, fmt.Errorf("need-user 缺少 userRequest 或夹带 contextRequest")
+			}
+			return out, nil
+		case "blocked":
+			if out.UserRequest != "" || len(out.ContextRequest) > 0 {
+				return out, fmt.Errorf("blocked 夹带其他状态字段")
+			}
+			return out, nil
+		case "need-context":
+			if out.UserRequest != "" {
+				return out, fmt.Errorf("need-context 夹带 userRequest")
+			}
+			if len(out.ContextRequest) == 0 {
+				return out, fmt.Errorf("need-context 缺少 contextRequest")
+			}
+			var request agentContextRequest
+			requestDecoder := json.NewDecoder(bytes.NewReader(out.ContextRequest))
+			requestDecoder.DisallowUnknownFields()
+			if err := requestDecoder.Decode(&request); err != nil {
+				return out, fmt.Errorf("contextRequest 非法: %w", err)
+			}
+			if strings.TrimSpace(request.Reason) == "" {
+				return out, fmt.Errorf("contextRequest 缺少 reason")
+			}
+			switch request.Kind {
+			case "expand-nodes":
+				if len(request.NodeIDs) == 0 {
+					return out, fmt.Errorf("expand-nodes 缺少 nodeIds")
+				}
+				for _, id := range request.NodeIDs {
+					if !inStrings(req.ProjectedNodeIDs, id) {
+						return out, fmt.Errorf("contextRequest 引用了未投影 nodeId")
+					}
+				}
+			case "region-detail":
+				if len(request.RegionIDs) == 0 {
+					return out, fmt.Errorf("region-detail 缺少 regionIds")
+				}
+				for _, id := range request.RegionIDs {
+					if !inStrings(req.ProjectedRegionIDs, id) {
+						return out, fmt.Errorf("contextRequest 引用了未投影 regionId")
+					}
+				}
+			default:
+				return out, fmt.Errorf("agent_row_plan contextRequest kind 非法")
+			}
+			return out, nil
+		default:
+			return out, fmt.Errorf("AgentRowPlan status 非法")
+		}
+	}
+	if out.Steps == nil {
+		return out, fmt.Errorf("planned 缺少 steps")
+	}
+	if len(out.ContextRequest) > 0 || out.UserRequest != "" {
+		return out, fmt.Errorf("planned 夹带上下文或用户请求")
+	}
+	goals := map[string]AgentRowPlanningGoalReq{}
+	for _, goal := range req.Goals {
+		goals[goal.GoalID] = goal
+	}
+	used := map[string]bool{}
+	for _, step := range out.Steps {
+		goal, ok := goals[step.GoalID]
+		if !ok || used[step.GoalID] {
+			return out, fmt.Errorf("行计划 goalId 未知或重复")
+		}
+		used[step.GoalID] = true
+		action, err := decodeAgentRowAction(step.Action)
+		if err != nil {
+			return out, err
+		}
+		checkNode := func(id, name string) error {
+			if inStrings(req.KnownSubmitNodeIDs, id) || inStrings(goal.ForbiddenNodeIDs, id) {
+				return fmt.Errorf("%s 命中禁止或提交节点", name)
+			}
+			if id == "" || !inStrings(req.ProjectedNodeIDs, id) || !inStrings(goal.ActionNodeIDs, id) {
+				return fmt.Errorf("%s 跨 Goal、未投影或不在动作作用域", name)
+			}
+			return nil
+		}
+		if action.Op != "run-skill" || action.TargetNodeID != "" {
+			if err := checkNode(action.TargetNodeID, "targetNodeId"); err != nil {
+				return out, err
+			}
+		}
+		switch action.Op {
+		case "click", "focus":
+		case "replace-text":
+			if action.ValueBinding != "goal-value" {
+				return out, fmt.Errorf("replace-text 必须使用 goal-value 本地绑定")
+			}
+			transform := action.Transform
+			if transform == "" {
+				transform = "identity"
+			}
+			if !inStrings(goal.AllowedTransforms, transform) {
+				return out, fmt.Errorf("replace-text 使用了未授权转换")
+			}
+		case "press-key":
+			if !inStrings([]string{"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Escape", "Tab", "Space", "Backspace"}, action.Key) {
+				return out, fmt.Errorf("press-key 使用了非白名单按键")
+			}
+		case "select-native":
+			if err := checkNode(action.OptionNodeID, "optionNodeId"); err != nil {
+				return out, err
+			}
+		case "run-skill":
+			if !inStrings(goal.Skills, action.SkillID) {
+				return out, fmt.Errorf("run-skill 引用了未公布技能")
+			}
+			if len(action.InputBindings) != 1 || action.InputBindings[0] != "goal-value" {
+				return out, fmt.Errorf("run-skill 只能绑定当前 Goal 值")
+			}
+		}
+		for _, evidence := range step.ExpectedEvidence {
+			if len(evidence) == 0 {
+				return out, fmt.Errorf("expectedEvidence 为空")
+			}
+			for key, value := range evidence {
+				if key != "kind" && key != "nodeId" {
+					return out, fmt.Errorf("expectedEvidence 包含 unknown field %q", key)
+				}
+				if key == "nodeId" {
+					id, ok := value.(string)
+					if !ok || !inStrings(goal.EvidenceNodeIDs, id) {
+						return out, fmt.Errorf("expectedEvidence 跨 Goal 或不在证据作用域")
+					}
+				}
+			}
+			kind, ok := evidence["kind"].(string)
+			if !ok || strings.TrimSpace(kind) == "" {
+				return out, fmt.Errorf("expectedEvidence.kind 不能为空")
+			}
+		}
+	}
+	for _, goalID := range out.DeferredGoalIDs {
+		if _, ok := goals[goalID]; !ok || used[goalID] {
+			return out, fmt.Errorf("deferredGoalIds 未知、重复或与 steps 冲突")
+		}
+		used[goalID] = true
+	}
+	return out, nil
+}
+
 func validateAgentVisualGroundOutput(req *AgentVisualGroundReq, content string) (any, error) {
 	var out struct {
 		CandidateNodeID *string `json:"candidateNodeId"`
@@ -623,6 +860,17 @@ func Specs() []Spec {
 					}
 				}
 				if err := validateCompiledInput(&CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash}, &out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+		},
+		{
+			Name:   "agent_row_plan",
+			NewReq: func() Request { return &AgentRowPlanReq{} },
+			Post: func(req Request, content string) (any, error) {
+				out, err := validateAgentRowPlanOutput(req.(*AgentRowPlanReq), content)
+				if err != nil {
 					return nil, err
 				}
 				return out, nil

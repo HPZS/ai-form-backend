@@ -58,7 +58,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev10: 新增 audit_agent_checkpoint，独立审核 Planner 与本地证据矛盾。
 // rev11: 新增 agent_visual_ground，承载独立授权后的遮罩局部截图视觉接地。
 // rev12: 视觉接地请求加入最小字段语义与 Goal 类型，避免多候选截图无目标猜测。
-const APIRevision = 12
+// rev13: 新增 agent_row_plan，以一次行级初始规划替代首行逐字段串行调用。
+const APIRevision = 13
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

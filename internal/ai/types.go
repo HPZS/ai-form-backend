@@ -250,6 +250,33 @@ type AgentStepReq struct {
 	VisualAuthorized   bool               `json:"visualAuthorized"`
 }
 
+// AgentRowPlanningGoalReq 不携带业务原值或 Vault 句柄；模型只能用 goal-value 占位绑定当前 Goal 的本地值。
+type AgentRowPlanningGoalReq struct {
+	GoalID             string   `json:"goalId"`
+	FieldIndex         int      `json:"fieldIndex"`
+	SemanticName       string   `json:"semanticName"`
+	ExpectedValueShape string   `json:"expectedValueShape"`
+	ActionNodeIDs      []string `json:"actionNodeIds"`
+	EvidenceNodeIDs    []string `json:"evidenceNodeIds"`
+	AllowedRootIDs     []string `json:"allowedRootIds"`
+	ForbiddenNodeIDs   []string `json:"forbiddenNodeIds"`
+	AllowedTransforms  []string `json:"allowedTransforms"`
+	Skills             []string `json:"skills"`
+}
+
+type AgentRowPlanReq struct {
+	Meta
+	SnapshotID         string                    `json:"snapshotId"`
+	ContextDigest      string                    `json:"contextDigest"`
+	RowPlanID          string                    `json:"rowPlanId"`
+	RiskLimit          string                    `json:"riskLimit"`
+	Goals              []AgentRowPlanningGoalReq `json:"goals"`
+	Projection         string                    `json:"projection"`
+	ProjectedNodeIDs   []string                  `json:"projectedNodeIds"`
+	ProjectedRegionIDs []string                  `json:"projectedRegionIds"`
+	KnownSubmitNodeIDs []string                  `json:"knownSubmitNodeIds"`
+}
+
 type AgentCheckpoint struct {
 	SnapshotID        string             `json:"snapshotId"`
 	GoalID            string             `json:"goalId"`
@@ -465,6 +492,88 @@ func (r *AgentStepReq) Validate() error {
 	}
 	if r.CallIndex < 0 || r.CallIndex > 20 {
 		return fmt.Errorf("callIndex 非法")
+	}
+	return nil
+}
+
+func (r *AgentRowPlanReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"snapshotId": r.SnapshotID, "contextDigest": r.ContextDigest, "rowPlanId": r.RowPlanID, "riskLimit": r.RiskLimit,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s 不能为空", name)
+		}
+		if err := capStr(name, value, 200); err != nil {
+			return err
+		}
+	}
+	if r.RiskLimit != "L0" && r.RiskLimit != "L1" {
+		return fmt.Errorf("agent_row_plan riskLimit 只允许 L0/L1")
+	}
+	if len(r.Projection) == 0 || len(r.Projection) > 512*1024 {
+		return fmt.Errorf("projection 为空或超过 512 KiB")
+	}
+	if err := checkStringList("projectedNodeIds", r.ProjectedNodeIDs, 20000, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("projectedRegionIds", r.ProjectedRegionIDs, 1000, 200); err != nil {
+		return err
+	}
+	if err := checkStringList("knownSubmitNodeIds", r.KnownSubmitNodeIDs, 200, 100); err != nil {
+		return err
+	}
+	if len(r.Goals) == 0 || len(r.Goals) > 200 {
+		return fmt.Errorf("goals 数量必须为 1..200")
+	}
+	goalIDs := map[string]bool{}
+	fieldIndexes := map[int]bool{}
+	for i, goal := range r.Goals {
+		prefix := fmt.Sprintf("goals[%d]", i)
+		if strings.TrimSpace(goal.GoalID) == "" || goalIDs[goal.GoalID] {
+			return fmt.Errorf("%s.goalId 为空或重复", prefix)
+		}
+		if goal.FieldIndex < 0 || fieldIndexes[goal.FieldIndex] {
+			return fmt.Errorf("%s.fieldIndex 非法或重复", prefix)
+		}
+		goalIDs[goal.GoalID] = true
+		fieldIndexes[goal.FieldIndex] = true
+		for name, value := range map[string]string{"goalId": goal.GoalID, "semanticName": goal.SemanticName, "expectedValueShape": goal.ExpectedValueShape} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s.%s 不能为空", prefix, name)
+			}
+			if err := capStr(prefix+"."+name, value, 200); err != nil {
+				return err
+			}
+		}
+		lists := []struct {
+			name        string
+			values      []string
+			max, maxLen int
+			required    bool
+		}{
+			{"actionNodeIds", goal.ActionNodeIDs, 1000, 100, true},
+			{"evidenceNodeIds", goal.EvidenceNodeIDs, 1000, 100, true},
+			{"allowedRootIds", goal.AllowedRootIDs, 100, 100, false},
+			{"forbiddenNodeIds", goal.ForbiddenNodeIDs, 2000, 100, false},
+			{"allowedTransforms", goal.AllowedTransforms, 20, 100, true},
+			{"skills", goal.Skills, 100, 100, false},
+		}
+		for _, list := range lists {
+			if list.required && len(list.values) == 0 {
+				return fmt.Errorf("%s.%s 不能为空", prefix, list.name)
+			}
+			if err := checkStringList(prefix+"."+list.name, list.values, list.max, list.maxLen); err != nil {
+				return err
+			}
+		}
+		for _, nodeID := range append(append([]string{}, goal.ActionNodeIDs...), goal.EvidenceNodeIDs...) {
+			if !inStrings(r.ProjectedNodeIDs, nodeID) {
+				return fmt.Errorf("%s 引用了未投影 nodeId", prefix)
+			}
+		}
 	}
 	return nil
 }

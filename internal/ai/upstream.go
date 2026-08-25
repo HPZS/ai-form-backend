@@ -145,6 +145,7 @@ var capMaxTokens = map[string]int{
 	"compile_input":          12000,
 	"audit_input_plan":       2000,
 	"repair_input_plan":      12000,
+	"agent_row_plan":         8000,
 	"agent_step":             1200,
 	"agent_visual_ground":    500,
 	"audit_agent_checkpoint": 600,
