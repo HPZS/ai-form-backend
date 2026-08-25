@@ -43,6 +43,13 @@ type agentStepOutput struct {
 	UserRequest      string           `json:"userRequest,omitempty"`
 }
 
+type agentContextRequest struct {
+	Kind      string   `json:"kind"`
+	NodeIDs   []string `json:"nodeIds,omitempty"`
+	RegionIDs []string `json:"regionIds,omitempty"`
+	Reason    string   `json:"reason"`
+}
+
 func inStrings(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
@@ -86,6 +93,51 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 		}
 		if out.Status == "need-context" && len(out.ContextRequest) == 0 {
 			return out, fmt.Errorf("need-context 缺少 contextRequest")
+		}
+		if out.Status == "need-context" {
+			var request agentContextRequest
+			dec := json.NewDecoder(bytes.NewReader(out.ContextRequest))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&request); err != nil {
+				return out, fmt.Errorf("contextRequest 非法: %w", err)
+			}
+			if strings.TrimSpace(request.Reason) == "" {
+				return out, fmt.Errorf("contextRequest 缺少 reason")
+			}
+			switch request.Kind {
+			case "expand-nodes":
+				if len(request.NodeIDs) == 0 {
+					return out, fmt.Errorf("expand-nodes 缺少 nodeIds")
+				}
+				for _, id := range request.NodeIDs {
+					if !inStrings(req.ProjectedNodeIDs, id) {
+						return out, fmt.Errorf("contextRequest 引用了未投影 nodeId")
+					}
+				}
+			case "region-detail":
+				if len(request.RegionIDs) == 0 {
+					return out, fmt.Errorf("region-detail 缺少 regionIds")
+				}
+				for _, id := range request.RegionIDs {
+					if !inStrings(req.ProjectedRegionIDs, id) {
+						return out, fmt.Errorf("contextRequest 引用了未投影 regionId")
+					}
+				}
+			case "local-screenshot":
+				if !req.VisualAuthorized {
+					return out, fmt.Errorf("local-screenshot 未取得视觉授权")
+				}
+				if len(request.RegionIDs) == 0 {
+					return out, fmt.Errorf("local-screenshot 缺少 regionIds")
+				}
+				for _, id := range request.RegionIDs {
+					if !inStrings(req.ProjectedRegionIDs, id) {
+						return out, fmt.Errorf("contextRequest 引用了未投影 regionId")
+					}
+				}
+			default:
+				return out, fmt.Errorf("contextRequest kind 非法")
+			}
 		}
 		return out, nil
 	case "act":
@@ -155,6 +207,36 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 		return out, fmt.Errorf("agent_step 第一版不生成不可逆动作")
 	default:
 		return out, fmt.Errorf("未知 action op %q", action.Op)
+	}
+	return out, nil
+}
+
+func validateAgentVisualGroundOutput(req *AgentVisualGroundReq, content string) (any, error) {
+	var out struct {
+		CandidateNodeID *string `json:"candidateNodeId"`
+		Confidence      float64 `json:"confidence"`
+		Reason          string  `json:"reason"`
+	}
+	if err := ParseAIJSONStrict(content, &out, "candidateNodeId", "confidence", "reason"); err != nil {
+		return nil, err
+	}
+	if out.Confidence < 0 || out.Confidence > 1 {
+		return nil, fmt.Errorf("视觉 confidence 必须在 0..1")
+	}
+	if strings.TrimSpace(out.Reason) == "" || len([]rune(out.Reason)) > 300 {
+		return nil, fmt.Errorf("视觉 reason 为空或超长")
+	}
+	if out.CandidateNodeID != nil {
+		found := false
+		for _, candidate := range req.Candidates {
+			if candidate.NodeID == *out.CandidateNodeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("视觉结果引用了候选集外 nodeId")
+		}
 	}
 	return out, nil
 }
@@ -553,6 +635,56 @@ func Specs() []Spec {
 				out, err := validateAgentStepOutput(req.(*AgentStepReq), content)
 				if err != nil {
 					return nil, err
+				}
+				return out, nil
+			},
+		},
+		{
+			Name:   "agent_visual_ground",
+			NewReq: func() Request { return &AgentVisualGroundReq{} },
+			Messages: func(req Request, system, user string) ([]ChatMessage, error) {
+				visual := req.(*AgentVisualGroundReq)
+				return []ChatMessage{
+					{Role: "system", Content: system},
+					{Role: "user", ContentParts: []ChatContentPart{
+						{Type: "text", Text: user},
+						{Type: "image_url", ImageURL: &ChatImageURL{URL: visual.ImageDataURL, Detail: "low"}},
+					}},
+				}, nil
+			},
+			Post: func(req Request, content string) (any, error) {
+				return validateAgentVisualGroundOutput(req.(*AgentVisualGroundReq), content)
+			},
+		},
+		{
+			Name:   "audit_agent_checkpoint",
+			NewReq: func() Request { return &AuditAgentCheckpointReq{} },
+			Post: func(_ Request, content string) (any, error) {
+				var out struct {
+					Consistent  bool     `json:"consistent"`
+					Decision    string   `json:"decision"`
+					Issues      []string `json:"issues"`
+					Explanation string   `json:"explanation"`
+				}
+				if err := ParseAIJSONStrict(content, &out, "consistent", "decision", "issues", "explanation"); err != nil {
+					return nil, err
+				}
+				if !inStrings([]string{"continue", "replan", "need-user", "blocked"}, out.Decision) {
+					return nil, fmt.Errorf("审核 decision 非法")
+				}
+				if !out.Consistent && out.Decision == "continue" {
+					return nil, fmt.Errorf("不一致的审核不得要求 continue")
+				}
+				if strings.TrimSpace(out.Explanation) == "" {
+					return nil, fmt.Errorf("审核 explanation 为空")
+				}
+				if len(out.Issues) > 20 {
+					return nil, fmt.Errorf("审核 issues 数量超限")
+				}
+				for _, issue := range out.Issues {
+					if strings.TrimSpace(issue) == "" || len([]rune(issue)) > 300 {
+						return nil, fmt.Errorf("审核 issue 为空或超长")
+					}
 				}
 				return out, nil
 			},

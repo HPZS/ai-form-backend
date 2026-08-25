@@ -34,8 +34,31 @@ const (
 )
 
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role         string            `json:"role"`
+	Content      string            `json:"-"`
+	ContentParts []ChatContentPart `json:"-"`
+}
+
+type ChatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+}
+
+type ChatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	content := any(m.Content)
+	if len(m.ContentParts) > 0 {
+		content = m.ContentParts
+	}
+	return json.Marshal(struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}{Role: m.Role, Content: content})
 }
 
 type CallResult struct {
@@ -119,16 +142,18 @@ const defaultMaxTokens = 2000
 // 每个能力都必须登记(有 TestCapMaxTokensCoverage 把关):漏登记会静默落到默认值,
 // match_columns 就曾因此在宽表单上必然截断 JSON,重试再截断,陷入 422 死循环。
 var capMaxTokens = map[string]int{
-	"compile_input":     12000,
-	"audit_input_plan":  2000,
-	"repair_input_plan": 12000,
-	"agent_step":        1200,
-	"assess_page":       300,
-	"analyze_form":      500,
-	"pick_open_button":  500,
-	"pick_form":         500,
-	"suggest_profile":   500,
-	"detect_grouping":   800,
+	"compile_input":          12000,
+	"audit_input_plan":       2000,
+	"repair_input_plan":      12000,
+	"agent_step":             1200,
+	"agent_visual_ground":    500,
+	"audit_agent_checkpoint": 600,
+	"assess_page":            300,
+	"analyze_form":           500,
+	"pick_open_button":       500,
+	"pick_form":              500,
+	"suggest_profile":        500,
+	"detect_grouping":        800,
 	// 只回一个字段名加一句理由(理由服务端截到 60 字),输出天然很小
 	"detect_identity": 300,
 	// 只回一串下标 + 两句短话

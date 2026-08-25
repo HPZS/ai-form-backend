@@ -79,6 +79,9 @@ func TestAiRateLimitPerMinute(t *testing.T) {
 	if w.Code != 429 {
 		t.Fatalf("第 61 次应 429,实际 %d", w.Code)
 	}
+	if w.Header().Get("Retry-After") != "60" || !strings.Contains(w.Body.String(), `"capability":"assess_page"`) {
+		t.Fatalf("429 必须返回分钟重试时间和能力信息,header=%q body=%s", w.Header().Get("Retry-After"), w.Body.String())
+	}
 }
 
 // aiRouter 组一个只带限流中间件的路由,身份由测试直接注入。
@@ -114,6 +117,9 @@ func TestAiTrialDailyLimit(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "开通个人版") {
 		t.Fatalf("应给出试用档专属提示,实际 %s", w.Body.String())
+	}
+	if w.Header().Get("Retry-After") != "86400" {
+		t.Fatalf("试用日限应返回日级 Retry-After,实际 %q", w.Header().Get("Retry-After"))
 	}
 }
 

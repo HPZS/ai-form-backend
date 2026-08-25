@@ -55,7 +55,9 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev7: 新增 compile_input 与 audit_input_plan，支持 AI 原生的任意文本/JSON 数据接收。
 // rev8: 新增 agent_step，支持受约束的页面单步规划。
 // rev9: 新增 repair_input_plan，审计阻断后按问题修正并再次复核。
-const APIRevision = 9
+// rev10: 新增 audit_agent_checkpoint，独立审核 Planner 与本地证据矛盾。
+// rev11: 新增 agent_visual_ground，承载独立授权后的遮罩局部截图视觉接地。
+const APIRevision = 11
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -266,7 +268,14 @@ func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 			if denied == trialKey {
 				msg = "试用期今日的调用额度已用完,开通个人版后不受此限制"
 			}
-			c.AbortWithStatusJSON(429, gin.H{"error": "RATE_LIMITED", "message": msg})
+			retryAfter := 60
+			if strings.HasPrefix(denied, "ai-day:") || strings.HasPrefix(denied, "ai-ip-day:") || denied == trialKey {
+				retryAfter = 86400
+			}
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.AbortWithStatusJSON(429, gin.H{
+				"error": "RATE_LIMITED", "message": msg, "capability": capability, "retryAfterSeconds": retryAfter,
+			})
 			return
 		}
 		c.Next()

@@ -41,6 +41,8 @@ type Spec struct {
 	Name   string
 	NewReq func() Request
 	Post   func(req Request, content string) (any, error)
+	// Messages 可选：视觉等能力在模板文字之外附加结构化多模态内容。
+	Messages func(req Request, system, user string) ([]ChatMessage, error)
 	// BillingGroup 可选:服务端从请求内容派生计费组(方案费/AI格防重的关键,不依赖客户端诚实)。
 	// 返回非空时覆盖客户端传的 billingGroupId。
 	BillingGroup func(userID int64, req Request) string
@@ -217,6 +219,13 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			return
 		}
 		messages := []ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
+		if spec.Messages != nil {
+			messages, err = spec.Messages(req, system, user)
+			if err != nil {
+				g.internalErr(c, meta.RequestID, spec.Name, "构建多模态消息", err)
+				return
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), callChainTimeout)
 		defer cancel()
 

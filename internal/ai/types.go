@@ -4,8 +4,10 @@
 package ai
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -238,12 +240,139 @@ type AgentStepReq struct {
 	RiskLimit          string             `json:"riskLimit"`
 	Projection         string             `json:"projection"`
 	ProjectedNodeIDs   []string           `json:"projectedNodeIds"`
+	ProjectedRegionIDs []string           `json:"projectedRegionIds"`
 	AllowedRootIDs     []string           `json:"allowedRootIds,omitempty"`
 	ForbiddenNodeIDs   []string           `json:"forbiddenNodeIds,omitempty"`
 	KnownSubmitNodeIDs []string           `json:"knownSubmitNodeIds,omitempty"`
 	Skills             []string           `json:"skills,omitempty"`
 	History            []AgentHistoryItem `json:"history,omitempty"`
 	CallIndex          int                `json:"callIndex"`
+	VisualAuthorized   bool               `json:"visualAuthorized"`
+}
+
+type AgentCheckpoint struct {
+	SnapshotID        string             `json:"snapshotId"`
+	GoalID            string             `json:"goalId"`
+	PlannerStatus     string             `json:"plannerStatus"`
+	ActionOp          string             `json:"actionOp,omitempty"`
+	LocalVerdict      string             `json:"localVerdict"`
+	EvidenceKinds     []string           `json:"evidenceKinds"`
+	VisibleErrorCodes []string           `json:"visibleErrorCodes"`
+	History           []AgentHistoryItem `json:"history"`
+}
+
+type AuditAgentCheckpointReq struct {
+	Meta
+	Checkpoint AgentCheckpoint `json:"checkpoint"`
+}
+
+type VisualCandidate struct {
+	NodeID string `json:"nodeId"`
+	Label  string `json:"label"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+type AgentVisualGroundReq struct {
+	Meta
+	SnapshotID    string            `json:"snapshotId"`
+	ContextDigest string            `json:"contextDigest"`
+	GoalID        string            `json:"goalId"`
+	RegionID      string            `json:"regionId"`
+	ImageDataURL  string            `json:"imageDataUrl"`
+	Candidates    []VisualCandidate `json:"candidates"`
+	MaskPolicyRef string            `json:"maskPolicyRef"`
+}
+
+func (r *AgentVisualGroundReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"snapshotId": r.SnapshotID, "contextDigest": r.ContextDigest, "goalId": r.GoalID, "regionId": r.RegionID,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s 不能为空", name)
+		}
+		if err := capStr(name, value, 200); err != nil {
+			return err
+		}
+	}
+	if r.MaskPolicyRef != "sensitive-controls-v1" {
+		return fmt.Errorf("maskPolicyRef 非法")
+	}
+	const jpegPrefix = "data:image/jpeg;base64,"
+	const pngPrefix = "data:image/png;base64,"
+	encoded := ""
+	if strings.HasPrefix(r.ImageDataURL, jpegPrefix) {
+		encoded = strings.TrimPrefix(r.ImageDataURL, jpegPrefix)
+	} else if strings.HasPrefix(r.ImageDataURL, pngPrefix) {
+		encoded = strings.TrimPrefix(r.ImageDataURL, pngPrefix)
+	} else {
+		return fmt.Errorf("imageDataUrl 只允许 jpeg/png data URL")
+	}
+	if len(encoded) == 0 || len(encoded) > 720*1024 {
+		return fmt.Errorf("视觉载荷为空或超过 720 KiB")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) > 540*1024 {
+		return fmt.Errorf("视觉载荷 base64 非法或解码后超过 540 KiB")
+	}
+	if len(r.Candidates) == 0 || len(r.Candidates) > 100 {
+		return fmt.Errorf("candidates 数量必须为 1..100")
+	}
+	seen := map[string]bool{}
+	for _, candidate := range r.Candidates {
+		if candidate.NodeID == "" || seen[candidate.NodeID] {
+			return fmt.Errorf("candidate nodeId 为空或重复")
+		}
+		seen[candidate.NodeID] = true
+		if err := capStr("candidate.nodeId", candidate.NodeID, 100); err != nil {
+			return err
+		}
+		if err := capStr("candidate.label", candidate.Label, 200); err != nil {
+			return err
+		}
+		if candidate.X < 0 || candidate.Y < 0 || candidate.Width <= 0 || candidate.Height <= 0 || candidate.X+candidate.Width > 10000 || candidate.Y+candidate.Height > 10000 {
+			return fmt.Errorf("candidate 几何非法")
+		}
+	}
+	return nil
+}
+
+func (r *AuditAgentCheckpointReq) Validate() error {
+	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	c := r.Checkpoint
+	for name, value := range map[string]string{"snapshotId": c.SnapshotID, "goalId": c.GoalID, "plannerStatus": c.PlannerStatus, "localVerdict": c.LocalVerdict} {
+		if value == "" {
+			return fmt.Errorf("checkpoint.%s 不能为空", name)
+		}
+		if err := capStr("checkpoint."+name, value, 200); err != nil {
+			return err
+		}
+	}
+	if err := checkStringList("checkpoint.evidenceKinds", c.EvidenceKinds, 50, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("checkpoint.visibleErrorCodes", c.VisibleErrorCodes, 50, 100); err != nil {
+		return err
+	}
+	if len(c.History) > 20 {
+		return fmt.Errorf("checkpoint.history 数量超限(20)")
+	}
+	for _, item := range c.History {
+		if err := capStr("checkpoint.history.action", item.Action, 300); err != nil {
+			return err
+		}
+		if err := capStr("checkpoint.history.verdict", item.Verdict, 300); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func checkStringList(name string, values []string, max, maxLen int) error {
@@ -288,6 +417,9 @@ func (r *AgentStepReq) Validate() error {
 		return fmt.Errorf("projection 为空或超过 512 KiB")
 	}
 	if err := checkStringList("projectedNodeIds", r.ProjectedNodeIDs, 20000, 100); err != nil {
+		return err
+	}
+	if err := checkStringList("projectedRegionIds", r.ProjectedRegionIDs, 1000, 200); err != nil {
 		return err
 	}
 	if err := checkStringList("allowedRootIds", r.AllowedRootIDs, 1000, 100); err != nil {
