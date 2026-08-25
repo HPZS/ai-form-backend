@@ -2,9 +2,51 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
+	store, err := LoadPrompts("../../prompts/private", []string{"agent_step"})
+	if err != nil {
+		t.Fatalf("加载 agent_step 提示词失败: %v", err)
+	}
+	_, user, version, err := store.Render("agent_step", validAgentReq())
+	if err != nil {
+		t.Fatalf("渲染 agent_step 提示词失败: %v", err)
+	}
+	if version != "v3" {
+		t.Fatalf("提示词版本应为 v3，实际 %q", version)
+	}
+	for _, want := range []string{`"status":"act"`, `"status":"done"`, `"status":"need-context"`, "未使用字段必须省略"} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("提示词缺少互斥输出约束 %q", want)
+		}
+	}
+	if strings.Contains(user, `"status":"act|done`) || strings.Contains(user, `"..."`) {
+		t.Fatal("提示词仍含会诱导模型原样输出的联合值或省略号占位")
+	}
+}
+
+func TestInvalidOutputFingerprintDoesNotContainRawOutput(t *testing.T) {
+	raw := `{"secret":"张三的手机号"}`
+	length, digest := invalidOutputFingerprint(raw)
+	if length != len(raw) || len(digest) != 12 {
+		t.Fatalf("指纹形态不正确: length=%d digest=%q", length, digest)
+	}
+	if strings.Contains(digest, "张三") || strings.Contains(digest, "手机号") {
+		t.Fatal("诊断指纹泄露了模型原文")
+	}
+	_, again := invalidOutputFingerprint(raw)
+	if digest != again {
+		t.Fatal("相同输出的诊断指纹不稳定")
+	}
+	reason := safeValidationReason(errors.New(`unknown field "张三的手机号"`))
+	if strings.Contains(reason, "张三") || strings.Contains(reason, "手机号") {
+		t.Fatalf("校验原因泄露了模型值: %q", reason)
+	}
+}
 
 func validAgentReq() *AgentStepReq {
 	return &AgentStepReq{

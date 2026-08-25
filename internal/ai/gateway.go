@@ -8,11 +8,13 @@ package ai
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,17 @@ const (
 
 // errLeaseLost 落账时发现租约已被接管:本次结果作废(事务回滚,未扣费)。
 var errLeaseLost = errors.New("租约已易主")
+var quotedValidationValue = regexp.MustCompile(`"[^"]*"`)
+
+// invalidOutputFingerprint 只提供关联诊断所需的形态与指纹，不把模型原文或页面业务数据写进日志。
+func invalidOutputFingerprint(content string) (int, string) {
+	sum := sha256.Sum256([]byte(content))
+	return len(content), fmt.Sprintf("%x", sum[:6])
+}
+
+func safeValidationReason(err error) string {
+	return quotedValidationValue.ReplaceAllString(err.Error(), `"<redacted>"`)
+}
 
 type Spec struct {
 	Name   string
@@ -256,6 +269,9 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			if err == nil {
 				break
 			}
+			outputLen, outputHash := invalidOutputFingerprint(call.Content)
+			log.Printf("[AI-INVALID] request_id=%s capability=%s attempt=%d validation=%s output_len=%d output_sha256=%s",
+				meta.RequestID, spec.Name, attempt+1, safeValidationReason(err), outputLen, outputHash)
 		}
 		if err != nil {
 			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, usage, promptVer, start)
