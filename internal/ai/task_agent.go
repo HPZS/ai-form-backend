@@ -183,6 +183,30 @@ func validateTaskAgentOutput(r *TaskAgentReq, content string) (TaskAgentOutput, 
 			if err := json.Unmarshal(value, target); err != nil || len(value) > 16000 {
 				return out, fmt.Errorf("工具参数类型或长度无效")
 			}
+			switch typed := target.(type) {
+			case *string:
+				if len([]rune(*typed)) > 2000 {
+					return out, fmt.Errorf("工具字符串过长")
+				}
+			case *[]string:
+				if len(*typed) > 100 {
+					return out, fmt.Errorf("工具字符串数组超限")
+				}
+				for _, item := range *typed {
+					if len([]rune(item)) > 1000 {
+						return out, fmt.Errorf("工具数组元素过长")
+					}
+				}
+			case *[]int:
+				if len(*typed) > 200 {
+					return out, fmt.Errorf("工具数字数组超限")
+				}
+				for _, item := range *typed {
+					if item < 0 || int64(item) > 9007199254740991 {
+						return out, fmt.Errorf("工具数字索引超限")
+					}
+				}
+			}
 		}
 	case "need-user":
 		q := out.Question

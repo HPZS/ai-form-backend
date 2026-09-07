@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +50,24 @@ func TestTaskAgentPromptAndRequestLimits(t *testing.T) {
 	req.History = make([]json.RawMessage, 25)
 	if req.Validate() == nil {
 		t.Fatal("accepted unbounded history")
+	}
+}
+
+func TestTaskToolLimitsMatchRuntime(t *testing.T) {
+	for _, test := range []struct {
+		kind  string
+		value any
+	}{
+		{"string", strings.Repeat("a", 2001)}, {"strings", make([]string, 101)},
+		{"numbers", []int{-1}}, {"numbers", make([]int, 201)},
+	} {
+		req := &TaskAgentReq{SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", Tools: []TaskToolDescription{{Name: "read", Parameters: map[string]TaskToolParameter{"value": {Type: test.kind, Required: true}}}}}
+		data, _ := json.Marshal(TaskAgentOutput{SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", Status: "tool", Explanation: "检查", Tool: &TaskToolCall{CallID: "call", Name: "read", Arguments: map[string]json.RawMessage{"value": func() []byte { b, _ := json.Marshal(test.value); return b }()}}})
+		if _, err := validateTaskAgentOutput(req, string(data)); err == nil {
+			t.Fatalf("accepted oversized %s", test.kind)
+		}
+	}
+	if temperature, tokens := CapabilityGenerationParams("agent_task_step"); temperature != 0 || tokens != 1800 {
+		t.Fatalf("unexpected evaluation parameters: %v %v", temperature, tokens)
 	}
 }

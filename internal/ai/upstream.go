@@ -177,13 +177,20 @@ type callParams struct {
 }
 
 // resolveParams 合成生效参数;全局默认与能力覆盖都没配模型时报错(不静默降级)。
+// CapabilityGenerationParams 供离线真实模型评测复用生产生成参数。
+func CapabilityGenerationParams(capability string) (float64, int) {
+	maxTokens := defaultMaxTokens
+	if configured, ok := capMaxTokens[capability]; ok {
+		maxTokens = configured
+	}
+	return capTemperature[capability], maxTokens
+}
+
 func resolveParams(def model.AIDefault, cap model.CapabilityPrice) (callParams, error) {
-	p := callParams{Model: def.Model, Temperature: capTemperature[cap.Capability], MaxTokens: defaultMaxTokens}
+	temperature, maxTokens := CapabilityGenerationParams(cap.Capability)
+	p := callParams{Model: def.Model, Temperature: temperature, MaxTokens: maxTokens}
 	if cap.Model != "" {
 		p.Model = cap.Model
-	}
-	if mt, ok := capMaxTokens[cap.Capability]; ok {
-		p.MaxTokens = mt
 	}
 	if p.Model == "" {
 		return p, fmt.Errorf("未配置默认模型,请在管理台「能力配置」设置")
