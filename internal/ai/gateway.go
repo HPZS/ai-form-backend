@@ -273,7 +273,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			log.Printf("[AI-INVALID] request_id=%s capability=%s attempt=%d validation=%s output_len=%d output_sha256=%s",
 				meta.RequestID, spec.Name, attempt+1, safeValidationReason(err), outputLen, outputHash)
 			if spec.Name == "agent_task_step" {
-				messages = append(messages, ChatMessage{Role: "user", Content: "上次输出未通过本地协议校验：" + safeValidationReason(err) + "。请严格遵守原工具定义、上下文绑定和互斥状态，重新给出合法 JSON；不要放宽权限或编造工具。"})
+				messages = append(messages, ChatMessage{Role: "user", Content: TaskAgentRepairMessage(req, err)})
 			}
 		}
 		if err != nil {

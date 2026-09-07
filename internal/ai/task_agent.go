@@ -57,6 +57,16 @@ type TaskAgentReq struct {
 
 var taskCallID = regexp.MustCompile(`^[\w:.-]{1,160}$`)
 
+// TaskAgentRepairMessage 只回传校验类别与本次绑定，不回显模型原文或业务值。
+func TaskAgentRepairMessage(req Request, validation error) string {
+	message := "上次输出未通过本地协议校验：" + safeValidationReason(validation) + "。请遵守原工具定义和互斥状态，重新输出 JSON，不放宽权限。"
+	if task, ok := req.(*TaskAgentReq); ok {
+		binding, _ := json.Marshal(map[string]string{"schemaVersion": task.SchemaVersion, "runId": task.RunID, "snapshotId": task.SnapshotID, "contextDigest": task.ContextDigest})
+		message += "本次必须逐字复制的顶层绑定是：" + string(binding) + "。不要使用历史工具调用中的标识。"
+	}
+	return message
+}
+
 func (r *TaskAgentReq) Validate() error {
 	if err := r.validateMeta(); err != nil {
 		return err

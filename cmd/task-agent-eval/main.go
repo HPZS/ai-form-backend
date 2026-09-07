@@ -117,7 +117,7 @@ func run() error {
 		if attempt == 1 {
 			return fmt.Errorf("两次模型输出均未通过生产协议校验: %w", err)
 		}
-		messages = append(messages, ai.ChatMessage{Role: "user", Content: "上次结果未通过协议校验，请重新检查工具参数、上下文绑定和互斥状态，返回符合定义的 JSON。"})
+		messages = append(messages, ai.ChatMessage{Role: "user", Content: ai.TaskAgentRepairMessage(req, err)})
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
