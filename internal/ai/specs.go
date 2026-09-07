@@ -877,6 +877,13 @@ func Specs() []Spec {
 			},
 		},
 		{
+			Name:   "agent_task_step",
+			NewReq: func() Request { return &TaskAgentReq{} },
+			Post: func(req Request, content string) (any, error) {
+				return validateTaskAgentOutput(req.(*TaskAgentReq), content)
+			},
+		},
+		{
 			Name:   "agent_step",
 			NewReq: func() Request { return &AgentStepReq{} },
 			Post: func(req Request, content string) (any, error) {
