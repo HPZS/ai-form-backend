@@ -239,3 +239,41 @@ func TestHeartbeatDistinguishesDBError(t *testing.T) {
 		t.Fatalf("DB 故障应 500 而不是伪装成 404,实际 %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestV2PaidIncludedSkipsDailyAndReplaySkipsMinute(t *testing.T) {
+	db, e := model.OpenMemory()
+	if e != nil {
+		t.Fatal(e)
+	}
+	u := model.User{Email: "included@example.test"}
+	db.Create(&u)
+	giveBucket(t, db, u.ID, 0)
+	s := &Server{db: db, limiter: ratelimit.New()}
+	for i := 0; i < aiPerUserPerDay; i++ {
+		s.limiter.Allow("ai-day:"+u.Email, aiPerUserPerDay, 24*time.Hour)
+	}
+	for i := 0; i < aiPerIPPerDay; i++ {
+		s.limiter.Allow("ai-ip-day:192.0.2.1", aiPerIPPerDay, 24*time.Hour)
+	}
+	r := aiRouter(t, s, u)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 204 {
+		t.Fatalf("订阅包含不受日额度限制 %s", w.Body.String())
+	}
+	for i := 0; i < aiPerCapPerMinute; i++ {
+		s.limiter.Allow("ai-min:assess_page:"+u.Email, aiPerCapPerMinute, time.Minute)
+	}
+	request := model.AIRequest{UserID: u.ID, RequestID: "11111111-1111-4111-8111-111111111111", Capability: "assess_page", Status: model.AIReqOK}
+	db.Create(&request)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{"requestId":"`+request.RequestID+`"}`)))
+	if w.Code != 204 {
+		t.Fatalf("重放不占 AI 次数 %s", w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 429 {
+		t.Fatal("新调用仍保留分钟限流")
+	}
+}
