@@ -52,12 +52,16 @@ func main() {
 
 	// AI 上游与能力模型参数在数据库中,由 /admin 管理台维护
 	gateway := ai.NewGateway(db, ai.NewCaller(db), prompts)
+	gateway.EnableBillingV2(cfg.HashPepper)
 	authSvc := auth.New(db, cfg.JWTSecret, cfg.HashPepper, cfg.AdminEmails)
 	mailer := email.New(cfg.SMTP)
 
 	// 后台维护任务:订阅过期、预占过期释放、幂等缓存清理
 	go func() {
 		for range time.Tick(time.Minute) {
+			if err := gateway.RecoverBillingV2(); err != nil {
+				log.Printf("计费恢复出错: %v", err)
+			}
 			if n, err := subscription.ExpireSubscriptions(db); err != nil {
 				log.Printf("订阅过期任务出错: %v", err)
 			} else if n > 0 {

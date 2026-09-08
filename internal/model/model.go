@@ -55,10 +55,11 @@ type RefreshToken struct {
 // ===== 订阅(设计取自 new-api) =====
 
 // 套餐类型(积分与订阅计费方案 §6.1):
-//   base  底座订阅,承载"插件可用"的门禁资格
-//   trial 试用,注册自动发放,同样给予门禁资格
-//   pack  加油包,只加积分不给资格;购买需存在 active base
-//   bonus 赠送桶(首充礼),系统发放不可购买,不给资格
+//
+//	base  底座订阅,承载"插件可用"的门禁资格
+//	trial 试用,注册自动发放,同样给予门禁资格
+//	pack  加油包,只加积分不给资格;购买需存在 active base
+//	bonus 赠送桶(首充礼),系统发放不可购买,不给资格
 const (
 	PlanTypeBase  = "base"
 	PlanTypeTrial = "trial"
@@ -110,16 +111,16 @@ const (
 
 // PaymentOrder 易支付订单。回调按 trade_no 幂等落账。
 type PaymentOrder struct {
-	ID         int64  `gorm:"primaryKey"`
-	TradeNo    string `gorm:"uniqueIndex;size:64;not null"`
-	UserID     int64  `gorm:"index;not null"`
-	PlanID     int64  `gorm:"not null"`
-	AmountCents int64 `gorm:"not null"`
-	Method     string `gorm:"size:32"` // alipay / wxpay ...
-	Status     string `gorm:"size:16;not null;default:pending"`
-	NotifyRaw  string `gorm:"type:text"` // 验签通过的回调参数快照
-	PaidAt     *time.Time
-	CreatedAt  time.Time
+	ID          int64  `gorm:"primaryKey"`
+	TradeNo     string `gorm:"uniqueIndex;size:64;not null"`
+	UserID      int64  `gorm:"index;not null"`
+	PlanID      int64  `gorm:"not null"`
+	AmountCents int64  `gorm:"not null"`
+	Method      string `gorm:"size:32"` // alipay / wxpay ...
+	Status      string `gorm:"size:16;not null;default:pending"`
+	NotifyRaw   string `gorm:"type:text"` // 验签通过的回调参数快照
+	PaidAt      *time.Time
+	CreatedAt   time.Time
 }
 
 // ===== 积分(自建) =====
@@ -138,11 +139,13 @@ func (AIDefault) TableName() string { return "ai_defaults" }
 // CapabilityPrice 能力配置:计费单价 + 可选的模型覆盖,管理台可改、即时生效。
 // Model 为空时用 AIDefault 的全局默认。
 type CapabilityPrice struct {
-	Capability string `gorm:"primaryKey;size:32"`
-	Credits    int64  `gorm:"not null"`
-	Enabled    bool   `gorm:"not null;default:true"`
-	Model      string `gorm:"size:64;not null;default:''"`
-	UpdatedAt  time.Time
+	BillingMode  string `gorm:"size:16;not null;default:''"`
+	PriceVersion int64  `gorm:"not null;default:1"`
+	Capability   string `gorm:"primaryKey;size:32"`
+	Credits      int64  `gorm:"not null"`
+	Enabled      bool   `gorm:"not null;default:true"`
+	Model        string `gorm:"size:64;not null;default:''"`
+	UpdatedAt    time.Time
 }
 
 // AIUpstream OpenAI 兼容上游,管理台增删改;故障切换按 sort_order 升序尝试。
@@ -173,16 +176,23 @@ type BillingGroupCharge struct {
 
 // CreditLedger 只增不改的积分流水。负 delta=消耗,正 delta=冲正。
 type CreditLedger struct {
-	ID             int64  `gorm:"primaryKey"`
-	UserID         int64  `gorm:"index;not null"`
-	SubscriptionID int64  `gorm:"not null"` // 扣到哪个桶
-	RequestID      string `gorm:"index;size:36"`
-	BillingGroupID string `gorm:"index;size:64"` // 计费组(服务端派生);防重锚点见 BillingGroupCharge
-	Capability     string `gorm:"size:32"`
-	Delta          int64  `gorm:"not null"`
-	PriceSnapshot  int64  // 扣费时刻的能力单价
-	BalanceAfter   int64  `gorm:"not null"` // 扣费后 available 快照
-	CreatedAt      time.Time
+	TaskID            string `gorm:"index;size:36"`
+	PolicyVersion     string `gorm:"size:32"`
+	PriceVersion      int64
+	RefundID          string `gorm:"index;size:36"`
+	RefundOfRequestID string `gorm:"index;size:36"`
+	ActorID           int64
+	Reason            string `gorm:"size:300"`
+	ID                int64  `gorm:"primaryKey"`
+	UserID            int64  `gorm:"index;not null"`
+	SubscriptionID    int64  `gorm:"not null"` // 扣到哪个桶
+	RequestID         string `gorm:"index;size:36"`
+	BillingGroupID    string `gorm:"index;size:64"` // 计费组(服务端派生);防重锚点见 BillingGroupCharge
+	Capability        string `gorm:"size:32"`
+	Delta             int64  `gorm:"not null"`
+	PriceSnapshot     int64  // 扣费时刻的能力单价
+	BalanceAfter      int64  `gorm:"not null"` // 扣费后 available 快照
+	CreatedAt         time.Time
 }
 
 const (
@@ -192,16 +202,30 @@ const (
 )
 
 // CreditHold 任务预占。available = 桶剩余合计 - Σ max(amount-consumed,0)(open)。
+type BucketAllocation struct {
+	BucketID int64 `json:"bucketId"`
+	Amount   int64 `json:"amount"`
+}
+
+type BillingPrice struct {
+	Credits int64 `json:"credits"`
+	Version int64 `json:"version"`
+}
+
 type CreditHold struct {
-	ID        string `gorm:"primaryKey;size:36"`
-	UserID    int64  `gorm:"index;not null"`
-	TaskID    string `gorm:"size:36;not null"`
-	Amount    int64  `gorm:"not null"`
-	Consumed  int64  `gorm:"not null;default:0"`
-	Status    string `gorm:"size:16;not null;default:open"`
-	ExpiresAt time.Time `gorm:"index"` // 心跳续期;定时任务过期释放
-	CreatedAt time.Time
-	SettledAt *time.Time
+	PolicyVersion  string                  `gorm:"size:32"`
+	Prices         map[string]BillingPrice `gorm:"serializer:json;type:text"`
+	Allocations    []BucketAllocation      `gorm:"serializer:json;type:text"`
+	PriceExpiresAt *time.Time
+	ID             string    `gorm:"primaryKey;size:36"`
+	UserID         int64     `gorm:"index;not null"`
+	TaskID         string    `gorm:"size:36;not null"`
+	Amount         int64     `gorm:"not null"`
+	Consumed       int64     `gorm:"not null;default:0"`
+	Status         string    `gorm:"size:16;not null;default:open"`
+	ExpiresAt      time.Time `gorm:"index"` // 心跳续期;定时任务过期释放
+	CreatedAt      time.Time
+	SettledAt      *time.Time
 }
 
 // ===== AI 请求(幂等闸门 + 计量;不含业务原文,response_cache 除外且 24h 清除) =====
@@ -214,28 +238,41 @@ const (
 )
 
 type AIRequest struct {
-	ID             int64  `gorm:"primaryKey"`
-	UserID         int64  `gorm:"index;not null"`
-	RequestID      string `gorm:"size:36;not null"` // UNIQUE(user_id, request_id) 迁移时建
-	TaskID         string `gorm:"size:36"`
-	BillingGroupID string `gorm:"size:64"`
-	Capability     string `gorm:"size:32;not null"`
-	Upstream       string `gorm:"size:32"`
-	Model          string `gorm:"size:64"`
-	PromptVersion  string `gorm:"size:16"`
-	SchemaVersion  string `gorm:"size:16"`
-	InputTokens    int
-	OutputTokens   int
-	CostMicros     int64 // 人民币微元
-	Credits        int64
-	Status         string `gorm:"size:16;not null;default:pending"`
-	LeaseExpiresAt time.Time
+	PolicyVersion        string `gorm:"index;size:32"`
+	BillingMode          string `gorm:"size:16"`
+	PriceVersion         int64
+	UnitPrice            int64
+	AuthorizationVersion string `gorm:"index;size:36"`
+	RequestDigest        string `gorm:"size:80"`
+	ReservedCredits      int64
+	Allocations          []BucketAllocation `gorm:"serializer:json;type:text"`
+	BillingReason        string             `gorm:"size:64"`
+	ExecutionAttempts    int
+	UsageDetails         string `gorm:"type:text"`
+	ResultCreatedAt      *time.Time
+	CacheExpiresAt       *time.Time `gorm:"index"`
+	ID                   int64      `gorm:"primaryKey"`
+	UserID               int64      `gorm:"index;not null"`
+	RequestID            string     `gorm:"size:36;not null"` // UNIQUE(user_id, request_id) 迁移时建
+	TaskID               string     `gorm:"size:36"`
+	BillingGroupID       string     `gorm:"size:64"`
+	Capability           string     `gorm:"size:32;not null"`
+	Upstream             string     `gorm:"size:32"`
+	Model                string     `gorm:"size:64"`
+	PromptVersion        string     `gorm:"size:16"`
+	SchemaVersion        string     `gorm:"size:16"`
+	InputTokens          int
+	OutputTokens         int
+	CostMicros           int64 // 人民币微元
+	Credits              int64
+	Status               string `gorm:"size:32;not null;default:pending"`
+	LeaseExpiresAt       time.Time
 	// LeaseToken 租约归属凭证:租约到期被别的请求接管后,原请求即使跑完也不得落账
 	// (否则会二次扣费并覆盖接管者的结果)。每次取得/抢占租约都换新值。
-	LeaseToken string `gorm:"size:36"`
-	LatencyMs  int
-	ResponseCache  string `gorm:"type:text"` // 幂等重放用,定时清除
-	CreatedAt      time.Time `gorm:"index"`
+	LeaseToken    string `gorm:"size:36"`
+	LatencyMs     int
+	ResponseCache string    `gorm:"type:text"` // 幂等重放用,定时清除
+	CreatedAt     time.Time `gorm:"index"`
 }
 
 // TaskMetric 插件任务结束上报的统计,不含业务原文。

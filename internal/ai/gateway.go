@@ -67,9 +67,11 @@ type Spec struct {
 }
 
 type Gateway struct {
-	db      *gorm.DB
-	caller  *Caller
-	prompts *PromptStore
+	billingV2 bool
+	digestKey []byte
+	db        *gorm.DB
+	caller    *Caller
+	prompts   *PromptStore
 }
 
 func NewGateway(db *gorm.DB, caller *Caller, prompts *PromptStore) *Gateway {
@@ -104,6 +106,10 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		}
 		if err := req.Validate(); err != nil {
 			apiErr(c, 400, "BAD_REQUEST", err.Error())
+			return
+		}
+		if g.billingV2 {
+			g.handleBillingV2(c, spec, req)
 			return
 		}
 		meta := req.GetMeta()
@@ -459,7 +465,7 @@ func mergeCredits(result any, cr credits.ChargeResult, meta *RespMeta) ([]byte, 
 // CleanExpiredCaches 定时任务:清除超过 24 小时的幂等缓存(隐私要求)。
 func CleanExpiredCaches(db *gorm.DB) (int64, error) {
 	r := db.Model(&model.AIRequest{}).
-		Where("status = ? AND created_at < ? AND response_cache <> ''", model.AIReqOK, time.Now().Add(-24*time.Hour)).
+		Where("status = ? AND response_cache <> '' AND ((policy_version = ? AND cache_expires_at < ?) OR ((policy_version IS NULL OR policy_version = '') AND created_at < ?))", model.AIReqOK, credits.PolicyV2, time.Now(), time.Now().Add(-24*time.Hour)).
 		Update("response_cache", "")
 	return r.RowsAffected, r.Error
 }

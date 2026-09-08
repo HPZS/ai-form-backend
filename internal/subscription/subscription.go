@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/HPZS/ai-form-backend/internal/ai"
+	"github.com/HPZS/ai-form-backend/internal/credits"
 	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
@@ -63,13 +64,16 @@ func SeedDefaults(db *gorm.DB) error {
 	// (温度/maxTokens 由代码按能力定死,不是配置项)。
 	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
 	for _, m := range ai.CapabilityMetas() {
-		row := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true}
+		row := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true, BillingMode: credits.DefaultMode(m.Key), PriceVersion: 1}
 		res := db.Where(model.CapabilityPrice{Capability: m.Key}).FirstOrCreate(&row)
 		if res.Error != nil {
 			return fmt.Errorf("播种能力 %s 单价失败: %w", m.Key, res.Error)
 		}
 		if res.RowsAffected > 0 {
 			log.Printf("[SEED] 新增能力单价 capability=%s credits=%d", m.Key, row.Credits)
+		}
+		if err := db.Model(&model.CapabilityPrice{}).Where("capability = ? AND billing_mode = ''", m.Key).Update("billing_mode", credits.DefaultMode(m.Key)).Error; err != nil {
+			return fmt.Errorf("补齐能力计费分类: %w", err)
 		}
 	}
 	return nil

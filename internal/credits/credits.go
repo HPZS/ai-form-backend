@@ -1,9 +1,10 @@
 // ai-form-backend - AGPL-3.0
 // 积分核心:跨桶扣费、流水、任务预占。规格见技术方案 v3 §5。
 // 所有写路径先 LockUser 锁用户行,同用户操作串行化,公式:
-//   桶剩余 remaining = AmountTotal - AmountUsed (active 且未到期)
-//   hold 冻结 = max(amount - consumed, 0) (open)
-//   available = Σ桶剩余 - Σhold冻结
+//
+//	桶剩余 remaining = AmountTotal - AmountUsed (active 且未到期)
+//	hold 冻结 = max(amount - consumed, 0) (open)
+//	available = Σ桶剩余 - Σhold冻结
 package credits
 
 import (
@@ -44,8 +45,17 @@ func bucketsRemaining(subs []model.UserSubscription) int64 {
 // holdsReserved 统计 open 预占的剩余冻结额。excludeTaskID 非空时排除该任务自己的 hold
 // (本任务的冻结额对自己可用)。
 func holdsReserved(tx *gorm.DB, userID int64, now time.Time, excludeTaskID string) (int64, error) {
+	legacy, err := legacyReserved(tx, userID, now, excludeTaskID)
+	if err != nil {
+		return 0, err
+	}
+	v2, err := V2Reserved(tx, userID, now)
+	return legacy + v2, err
+}
+
+func legacyReserved(tx *gorm.DB, userID int64, now time.Time, excludeTaskID string) (int64, error) {
 	var holds []model.CreditHold
-	q := tx.Where("user_id = ? AND status = ? AND expires_at > ?", userID, model.HoldStatusOpen, now)
+	q := tx.Where("user_id = ? AND status = ? AND expires_at > ? AND (policy_version IS NULL OR policy_version = '')", userID, model.HoldStatusOpen, now)
 	if excludeTaskID != "" {
 		q = q.Where("task_id <> ?", excludeTaskID)
 	}
@@ -324,16 +334,23 @@ func ExtendBucket(db *gorm.DB, subID int64, days int) (*model.UserSubscription, 
 
 // RevokeBucket 作废一个桶(剩余额度立即不可用);历史流水不动。
 func RevokeBucket(db *gorm.DB, subID int64) error {
-	r := db.Model(&model.UserSubscription{}).
-		Where("id = ? AND status <> ?", subID, model.SubStatusRevoked).
-		Update("status", model.SubStatusRevoked)
-	if r.Error != nil {
-		return r.Error
+	var sub model.UserSubscription
+	if err := db.First(&sub, subID).Error; err != nil {
+		return err
 	}
-	if r.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockUser(tx, sub.UserID); err != nil {
+			return err
+		}
+		result := tx.Model(&model.UserSubscription{}).Where("id = ? AND status <> ?", subID, model.SubStatusRevoked).Update("status", model.SubStatusRevoked)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
 }
 
 // ===== 任务预占 =====
@@ -395,7 +412,7 @@ func CreateHold(db *gorm.DB, userID int64, taskID string, amount int64) (*model.
 func Heartbeat(db *gorm.DB, userID int64, holdID string) (time.Time, error) {
 	exp := time.Now().Add(holdTTL)
 	r := db.Model(&model.CreditHold{}).
-		Where("id = ? AND user_id = ? AND status = ?", holdID, userID, model.HoldStatusOpen).
+		Where("id = ? AND user_id = ? AND status = ? AND expires_at > ?", holdID, userID, model.HoldStatusOpen, time.Now()).
 		Update("expires_at", exp)
 	if r.Error != nil {
 		return time.Time{}, r.Error
@@ -411,33 +428,41 @@ func Heartbeat(db *gorm.DB, userID int64, holdID string) (time.Time, error) {
 // 一律成功会让插件把"服务端根本没有这个预占"当成结算完成,冻结额一直挂到过期为止,
 // holdId 串号/传错这类真实故障也被一起吞掉。
 func Settle(db *gorm.DB, userID int64, holdID string) error {
-	now := time.Now()
-	r := db.Model(&model.CreditHold{}).
-		Where("id = ? AND user_id = ? AND status = ?", holdID, userID, model.HoldStatusOpen).
-		Updates(map[string]any{"status": model.HoldStatusSettled, "settled_at": now})
-	if r.Error != nil {
-		return r.Error
-	}
-	if r.RowsAffected > 0 {
-		return nil
-	}
-	var cnt int64
-	if err := db.Model(&model.CreditHold{}).
-		Where("id = ? AND user_id = ?", holdID, userID).Count(&cnt).Error; err != nil {
-		return err
-	}
-	if cnt == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockUser(tx, userID); err != nil {
+			return err
+		}
+		var h model.CreditHold
+		if err := tx.Where("id = ? AND user_id = ?", holdID, userID).First(&h).Error; err != nil {
+			return err
+		}
+		if h.Status != model.HoldStatusOpen {
+			return nil
+		}
+		return tx.Model(&h).Updates(map[string]any{"status": model.HoldStatusSettled, "settled_at": time.Now()}).Error
+	})
 }
 
 // ExpireHolds 定时任务:释放过期未结算的 hold(浏览器崩溃/任务遗忘兜底)。
 func ExpireHolds(db *gorm.DB) (int64, error) {
-	r := db.Model(&model.CreditHold{}).
-		Where("status = ? AND expires_at <= ?", model.HoldStatusOpen, time.Now()).
-		Update("status", model.HoldStatusExpired)
-	return r.RowsAffected, r.Error
+	var holds []model.CreditHold
+	if err := db.Where("status = ? AND expires_at <= ?", model.HoldStatusOpen, time.Now()).Find(&holds).Error; err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, h := range holds {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := model.LockUser(tx, h.UserID); err != nil {
+				return err
+			}
+			result := tx.Model(&model.CreditHold{}).Where("id = ? AND status = ? AND expires_at <= ?", h.ID, model.HoldStatusOpen, time.Now()).Update("status", model.HoldStatusExpired)
+			count += result.RowsAffected
+			return result.Error
+		}); err != nil {
+			return count, err
+		}
+	}
+	return count, nil
 }
 
 func min64(a, b int64) int64 {

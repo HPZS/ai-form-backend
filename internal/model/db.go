@@ -136,6 +136,8 @@ func Migrate(db *gorm.DB) error {
 	// 3. 防重复预占:同任务至多一个 open hold
 	// 4. 任务统计:同任务一条(重复上报覆盖走 upsert)
 	for _, sql := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_v2_debit_bucket ON credit_ledgers(user_id, request_id, subscription_id) WHERE policy_version = 'per-call-v2' AND delta < 0`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_v2_refund_bucket ON credit_ledgers(user_id, refund_id, subscription_id) WHERE refund_id <> ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_requests_user_request ON ai_requests(user_id, request_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_group_charge ON billing_group_charges(user_id, billing_group_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_holds_open_task ON credit_holds(user_id, task_id) WHERE status = 'open'`,

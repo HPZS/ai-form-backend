@@ -14,9 +14,11 @@ import (
 
 // Meta 每个请求携带的公共元信息。
 type Meta struct {
-	RequestID      string `json:"requestId"`
-	TaskID         string `json:"taskId,omitempty"`
-	BillingGroupID string `json:"billingGroupId,omitempty"`
+	BillingProtocolVersion int    `json:"billingProtocolVersion,omitempty"`
+	AuthorizationVersion   string `json:"authorizationVersion,omitempty"`
+	RequestID              string `json:"requestId"`
+	TaskID                 string `json:"taskId,omitempty"`
+	BillingGroupID         string `json:"billingGroupId,omitempty"`
 }
 
 func (m *Meta) GetMeta() *Meta { return m }
@@ -691,6 +693,7 @@ const (
 )
 
 type MatchColumnsReq struct {
+	NonEmptyColumns []string `json:"nonEmptyColumns"`
 	Meta
 	SampleRows []map[string]string `json:"sampleRows,omitempty"`
 	Context    string              `json:"context,omitempty"` // initial(默认) | dynamic | repair
@@ -723,6 +726,27 @@ func (r *MatchColumnsReq) Validate() error {
 	}
 	if err := checkHeaders(r.Headers); err != nil {
 		return err
+	}
+	if r.NonEmptyColumns != nil {
+		allowed := map[string]bool{}
+		for _, h := range r.Headers {
+			allowed[h] = true
+		}
+		nonempty := map[string]bool{}
+		for _, h := range r.NonEmptyColumns {
+			if !allowed[h] || nonempty[h] {
+				return fmt.Errorf("非空列摘要不合法")
+			}
+			nonempty[h] = true
+		}
+		rows := append([]map[string]string{r.SampleRow}, r.SampleRows...)
+		for _, row := range rows {
+			for h, v := range row {
+				if strings.TrimSpace(v) != "" && allowed[h] && !nonempty[h] {
+					return fmt.Errorf("非空列摘要与来源样本矛盾")
+				}
+			}
+		}
 	}
 	// 已占用列与 headers 同一把尺子:它本来就是 headers 的子集,不该有另一套上限
 	if err := checkHeaders(r.UsedColumns); err != nil {

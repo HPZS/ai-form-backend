@@ -27,7 +27,7 @@ func writePrompt(t *testing.T, dir, cap string) {
 	}
 }
 
-func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.DB, int64) {
+func setupGateway(t *testing.T, upstream *httptest.Server, v2 ...bool) (*gin.Engine, *gorm.DB, int64) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db, err := model.OpenMemory()
@@ -59,6 +59,15 @@ func setupGateway(t *testing.T, upstream *httptest.Server) (*gin.Engine, *gorm.D
 		t.Fatal(err)
 	}
 	g := NewGateway(db, NewCaller(db), prompts)
+	if len(v2) > 0 && v2[0] {
+		g.EnableBillingV2("billing-test-key")
+		if err := db.Model(&model.CapabilityPrice{}).Where("credits = 0").Update("billing_mode", "included").Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(&model.CapabilityPrice{}).Where("credits > 0").Update("billing_mode", "per_call").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	servedSet := map[string]bool{}
 	for _, cap := range served {
