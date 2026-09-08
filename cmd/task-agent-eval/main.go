@@ -61,6 +61,12 @@ func run() error {
 		return fmt.Errorf("需要 HTTPS 上游地址、评测密钥和模型配置")
 	}
 	messages := []ai.ChatMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
+	if spec.Messages != nil {
+		messages, err = spec.Messages(req, system, user)
+		if err != nil {
+			return err
+		}
+	}
 	started := time.Now()
 	var result any
 	temperature, maxTokens := ai.CapabilityGenerationParams(spec.Name)
