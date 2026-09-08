@@ -60,7 +60,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev12: 视觉接地请求加入最小字段语义与 Goal 类型，避免多候选截图无目标猜测。
 // rev13: 新增 agent_row_plan，以一次行级初始规划替代首行逐字段串行调用。
 // rev14: 新增 agent_task_step，支持任务工具循环与必要的人工交接。
-const APIRevision = 14
+// rev15: 字段匹配接收多条真实代表性样本。
+const APIRevision = 15
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

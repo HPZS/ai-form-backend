@@ -692,10 +692,11 @@ const (
 
 type MatchColumnsReq struct {
 	Meta
-	Context   string            `json:"context,omitempty"` // initial(默认) | dynamic | repair
-	Fields    []FormFieldBrief  `json:"fields"`
-	Headers   []string          `json:"headers"`
-	SampleRow map[string]string `json:"sampleRow"`
+	SampleRows []map[string]string `json:"sampleRows,omitempty"`
+	Context    string              `json:"context,omitempty"` // initial(默认) | dynamic | repair
+	Fields     []FormFieldBrief    `json:"fields"`
+	Headers    []string            `json:"headers"`
+	SampleRow  map[string]string   `json:"sampleRow"`
 	// UsedColumns 本次匹配之前**已经被别的字段接走**的数据列。
 	//
 	// dynamic 是增量匹配:插件只把新出现的字段送过来,模型看不到已经建好的映射,
@@ -725,6 +726,9 @@ func (r *MatchColumnsReq) Validate() error {
 	}
 	// 已占用列与 headers 同一把尺子:它本来就是 headers 的子集,不该有另一套上限
 	if err := checkHeaders(r.UsedColumns); err != nil {
+		return err
+	}
+	if err := checkRows("sampleRows", r.SampleRows, 5, 200); err != nil {
 		return err
 	}
 	return checkRow("sampleRow", r.SampleRow, 200)

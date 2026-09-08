@@ -1,4 +1,4 @@
-version: v6
+version: v7
 system: |
   你是浏览器表单自动填充助手,任务是建立"网页表单字段"与"数据表列"的对应关系。只输出 JSON,不要输出任何其他文字。
 user: |
@@ -6,8 +6,12 @@ user: |
   {{jsonIndent .Req.Fields}}
   ## 数据表列名
   {{json .Req.Headers}}
-  ## 第一行示例数据
+  ## 单条真实示例数据
   {{json .Req.SampleRow}}
+  {{- if .Req.SampleRows}}
+  ## 多条真实记录样本（空值、例外与分支只代表所在记录，不能从第一条推断全批）
+  {{json .Req.SampleRows}}
+  {{- end}}
   {{- if .Req.UsedColumns}}
   ## 已经被本表单其它字段接走的列(本次是增量匹配,这些列多半不该再要一次)
   {{json .Req.UsedColumns}}
