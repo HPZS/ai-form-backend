@@ -40,7 +40,8 @@ export default function Capabilities() {
       await put('/v1/admin/capability-prices/' + r.capability, {
         credits: r.credits, enabled: r.enabled, model: r.model || '',
       });
-      toast.success(`「${r.name}」已保存(在途请求与预占按快照)`);
+      toast.success(`「${r.name}」已保存(在途请求与授权按快照)`);
+      await load();
     } catch (e) { toast.error(e.message); }
   };
 
@@ -54,7 +55,8 @@ export default function Capabilities() {
         </div>
       ),
     },
-    { title: '积分/次', key: 'credits', width: 110, render: (r) => <NumberInput size="sm" value={r.credits} onChange={(x) => patch(r.capability, 'credits', x ?? 0)} min={0} style={{ width: 88 }} /> },
+    { title: '计费方式 / 价格版本', key: 'billingMode', render: r => <span>{r.billingMode === 'included' ? '订阅包含' : '逐次积分'} · v{r.priceVersion}</span> },
+    { title: '积分/次', key: 'credits', width: 110, render: (r) => <NumberInput size="sm" disabled={r.billingMode === 'included'} value={r.credits} onChange={(x) => patch(r.capability, 'credits', x ?? 0)} min={r.billingMode === 'included' ? 0 : 1} max={1000000} style={{ width: 88 }} /> },
     { title: '模型(留空用默认)', key: 'model', width: 230, render: (r) => <Input size="sm" mono value={r.model} onChange={(x) => patch(r.capability, 'model', x)} placeholder={defaults.model || '未设置默认'} style={{ width: 210 }} /> },
     { title: '启用', key: 'enabled', width: 70, render: (r) => <Switch checked={r.enabled} onChange={(x) => patch(r.capability, 'enabled', x)} /> },
     { title: '', key: 'ops', width: 90, render: (r) => <div className="actions"><Button size="sm" onClick={() => saveRow(r)}>保存</Button></div> },

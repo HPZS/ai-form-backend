@@ -53,6 +53,7 @@ func main() {
 	// AI 上游与能力模型参数在数据库中,由 /admin 管理台维护
 	gateway := ai.NewGateway(db, ai.NewCaller(db), prompts)
 	gateway.EnableBillingV2(cfg.HashPepper)
+	gateway.PauseNewPaidCalls(cfg.BillingPaused)
 	authSvc := auth.New(db, cfg.JWTSecret, cfg.HashPepper, cfg.AdminEmails)
 	mailer := email.New(cfg.SMTP)
 

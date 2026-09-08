@@ -3,7 +3,10 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -62,7 +65,7 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev14: 新增 agent_task_step，支持任务工具循环与必要的人工交接。
 // rev15: 字段匹配接收多条真实代表性样本。
 // rev16: 新增独立的资料图像区域识别与复核契约。
-const APIRevision = 16
+const APIRevision = 17
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -151,6 +154,12 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			u.POST("/auth/set-password", s.setPassword)
 			u.POST("/auth/sso-code", s.ssoCode)
 			u.GET("/credits/ledger", s.ledger)
+			u.GET("/billing/catalog", s.billingCatalog)
+			u.POST("/billing/quotes", s.userRateLimit("billing-quote", 300, time.Hour), s.billingQuote)
+			u.POST("/billing/authorizations", s.billingAuthorize)
+			u.GET("/billing/tasks/:id", s.billingTask)
+			u.GET("/billing/requests", s.billingRequests)
+			u.GET("/billing/requests/:id", s.gateway.QueryRequest)
 			u.POST("/credits/estimate", s.estimate)
 			u.POST("/credits/holds", s.createHold)
 			u.PATCH("/credits/holds/:id/heartbeat", s.heartbeat)
@@ -169,6 +178,7 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 		admin := v1.Group("/admin", s.authRequired, s.adminRequired)
 		{
 			admin.GET("/plans", s.adminListPlans)
+			admin.POST("/billing/refunds", s.billingRefund)
 			admin.POST("/plans", s.adminCreatePlan)
 			admin.PUT("/plans/:id", s.adminUpdatePlan)
 			admin.GET("/ai-defaults", s.adminGetAIDefaults)
@@ -250,6 +260,27 @@ func hasActiveBase(db *gorm.DB, userID int64) (bool, error) {
 // (逐条 Allow 串 `||` 会让后一条拒绝的请求白吃掉前几条的名额),拒绝原因落日志。
 func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 重放只取既有结果，不消耗 AI 次数；最终摘要校验仍由网关完成。
+		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, (1<<20)+1))
+		if err != nil || len(raw) > 1<<20 {
+			c.AbortWithStatusJSON(400, gin.H{"error": "BAD_REQUEST"})
+			return
+		}
+		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+		var identity struct {
+			RequestID string `json:"requestId"`
+		}
+		if json.Unmarshal(raw, &identity) == nil && identity.RequestID != "" {
+			var count int64
+			if err := s.db.Model(&model.AIRequest{}).Where("user_id = ? AND request_id = ? AND capability = ?", c.GetInt64("userID"), identity.RequestID, capability).Count(&count).Error; err != nil {
+				abortInternalErr(c, "检查重放限流", err)
+				return
+			}
+			if count > 0 {
+				c.Next()
+				return
+			}
+		}
 		key := c.GetString("email")
 		// 试用档日限更严,先确定档位才能把它并进同一次判定
 		hasBase, err := hasActiveBase(s.db, c.GetInt64("userID"))
@@ -262,6 +293,9 @@ func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 			{Key: "ai-min:" + capability + ":" + key, Limit: aiPerCapPerMinute, Window: time.Minute},
 			{Key: "ai-day:" + key, Limit: aiPerUserPerDay, Window: 24 * time.Hour},
 			{Key: "ai-ip-day:" + c.ClientIP(), Limit: aiPerIPPerDay, Window: 24 * time.Hour},
+		}
+		if hasBase && credits.DefaultMode(capability) == credits.ModeIncluded {
+			rules = rules[:1]
 		}
 		if !hasBase {
 			rules = append(rules, ratelimit.Rule{Key: trialKey, Limit: aiTrialPerDay, Window: 24 * time.Hour})
@@ -906,6 +940,7 @@ func (s *Server) adminListPrices(c *gin.Context) {
 		}
 		out = append(out, gin.H{
 			"capability": p.Capability, "name": m.Name, "desc": m.Desc,
+			"billingMode": p.BillingMode, "priceVersion": p.PriceVersion,
 			"credits": p.Credits, "enabled": p.Enabled, "model": p.Model,
 		})
 	}
@@ -925,14 +960,16 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
-	if req.Credits < 0 {
-		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "单价不能为负"})
+	mode := credits.DefaultMode(c.Param("capability"))
+	if !credits.ValidPrice(model.CapabilityPrice{BillingMode: mode, Credits: req.Credits, PriceVersion: 1}) {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "订阅包含能力必须为 0，按次能力必须为正整数且不超过 1000000"})
 		return
 	}
 	r := s.db.Model(&model.CapabilityPrice{}).
 		Where("capability = ?", c.Param("capability")).
 		Updates(map[string]any{
 			"credits": req.Credits, "enabled": req.Enabled, "model": strings.TrimSpace(req.Model),
+			"billing_mode": mode, "price_version": gorm.Expr("price_version + 1"),
 		})
 	if r.Error != nil {
 		internalErr(c, "管理台改能力单价", r.Error)
@@ -1201,10 +1238,12 @@ func (s *Server) adminAdjustSub(c *gin.Context) {
 
 func (s *Server) about(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"name":        "ai-form-backend",
-		"apiRevision": APIRevision,
-		"license":     "AGPL-3.0",
-		"source":      sourceRepo,
+		"name":                   "ai-form-backend",
+		"apiRevision":            APIRevision,
+		"billingProtocolVersion": 2,
+		"billingPolicyVersion":   credits.PolicyV2,
+		"license":                "AGPL-3.0",
+		"source":                 sourceRepo,
 		"attribution": []string{
 			"Frontend design and development by New API contributors.",
 			"Based on new-api: https://github.com/QuantumNous/new-api",

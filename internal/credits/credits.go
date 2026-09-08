@@ -27,7 +27,7 @@ var (
 // activeBuckets 返回未到期、有剩余的桶,按到期时间升序(先扣最早到期的)。
 func activeBuckets(tx *gorm.DB, userID int64, now time.Time) ([]model.UserSubscription, error) {
 	var subs []model.UserSubscription
-	err := tx.Where("user_id = ? AND status = ? AND ends_at > ?", userID, model.SubStatusActive, now).
+	err := tx.Where("user_id = ? AND status = ? AND starts_at <= ? AND ends_at > ?", userID, model.SubStatusActive, now, now).
 		Order("ends_at asc").Find(&subs).Error
 	return subs, err
 }
@@ -308,7 +308,13 @@ func ExtendBucket(db *gorm.DB, subID int64, days int) (*model.UserSubscription, 
 		return nil, fmt.Errorf("延长天数必须在 1~3650 之间")
 	}
 	var sub model.UserSubscription
+	if err := db.First(&sub, subID).Error; err != nil {
+		return nil, err
+	}
 	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockUser(tx, sub.UserID); err != nil {
+			return err
+		}
 		// 读-改-写必须在锁内:两笔并发延期若各读到同一个 ends_at,后写的会覆盖前写的,
 		// 一笔延期凭空消失(桶的到期时间是钱,不能靠"管理员不会同时点两下"来保证)
 		locked, err := model.LockSubscription(tx, subID)
@@ -411,16 +417,20 @@ func CreateHold(db *gorm.DB, userID int64, taskID string, amount int64) (*model.
 // Heartbeat 续期,返回新到期时间;hold 不存在或非 open 报错。
 func Heartbeat(db *gorm.DB, userID int64, holdID string) (time.Time, error) {
 	exp := time.Now().Add(holdTTL)
-	r := db.Model(&model.CreditHold{}).
-		Where("id = ? AND user_id = ? AND status = ? AND expires_at > ?", holdID, userID, model.HoldStatusOpen, time.Now()).
-		Update("expires_at", exp)
-	if r.Error != nil {
-		return time.Time{}, r.Error
-	}
-	if r.RowsAffected == 0 {
-		return time.Time{}, gorm.ErrRecordNotFound
-	}
-	return exp, nil
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := model.LockUser(tx, userID); err != nil {
+			return err
+		}
+		r := tx.Model(&model.CreditHold{}).Where("id = ? AND user_id = ? AND status = ? AND expires_at > ?", holdID, userID, model.HoldStatusOpen, time.Now()).Update("expires_at", exp)
+		if r.Error != nil {
+			return r.Error
+		}
+		if r.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	return exp, err
 }
 
 // Settle 原子幂等结算(open→settled),释放剩余冻结额,无流水动作。

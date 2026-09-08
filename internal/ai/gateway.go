@@ -67,11 +67,12 @@ type Spec struct {
 }
 
 type Gateway struct {
-	billingV2 bool
-	digestKey []byte
-	db        *gorm.DB
-	caller    *Caller
-	prompts   *PromptStore
+	billingV2     bool
+	digestKey     []byte
+	billingPaused bool
+	db            *gorm.DB
+	caller        *Caller
+	prompts       *PromptStore
 }
 
 func NewGateway(db *gorm.DB, caller *Caller, prompts *PromptStore) *Gateway {

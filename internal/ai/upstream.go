@@ -72,6 +72,22 @@ type CallResult struct {
 	OutputTokens int
 }
 
+// AttemptUsage 仅记录技术计量，不保存提示词、模型业务原文或密钥。
+type AttemptUsage struct {
+	Upstream     string `json:"upstream"`
+	Model        string `json:"model"`
+	Status       string `json:"status"`
+	InputTokens  int    `json:"inputTokens"`
+	OutputTokens int    `json:"outputTokens"`
+	DurationMs   int64  `json:"durationMs"`
+	CostStatus   string `json:"costStatus"`
+}
+type usageObserverKey struct{}
+
+func withUsageObserver(ctx context.Context, observe func(AttemptUsage)) context.Context {
+	return context.WithValue(ctx, usageObserverKey{}, observe)
+}
+
 type breakerState struct {
 	fails     int
 	coolUntil time.Time
@@ -231,7 +247,20 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 			errs = append(errs, fmt.Sprintf("上游 %s 冷却中", up.Name))
 			continue
 		}
+		started := time.Now()
 		res, err := c.callOnce(ctx, up, params, messages)
+		if observe, ok := ctx.Value(usageObserverKey{}).(func(AttemptUsage)); ok {
+			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown"}
+			if res != nil {
+				item.Model = res.Model
+				item.InputTokens = res.InputTokens
+				item.OutputTokens = res.OutputTokens
+			}
+			if err == nil {
+				item.Status = "responded"
+			}
+			observe(item)
+		}
 		if err == nil {
 			c.markOK(up.ID)
 			return res, nil
@@ -303,17 +332,21 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		return nil, fmt.Errorf("上游 %s 响应格式异常: %w", up.Name, err)
 	}
 	if len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("上游 %s 返回空 choices", up.Name)
+		return &CallResult{Upstream: up.Name, Model: params.Model, InputTokens: cr.Usage.PromptTokens, OutputTokens: cr.Usage.CompletionTokens}, fmt.Errorf("上游 %s 返回空 choices", up.Name)
 	}
 	// 上游换了模型:JSON 能力的输出质量与计量归因都会跟着变,审计字段记的是"意愿"而非事实
 	if cr.Model != "" && cr.Model != params.Model {
 		log.Printf("[AI] 上游 %s 实际服务的模型与请求不符 请求=%s 实际=%s", up.Name, params.Model, cr.Model)
 	}
+	actualModel := cr.Model
+	if actualModel == "" {
+		actualModel = params.Model
+	}
 	return &CallResult{
 		Content:      cr.Choices[0].Message.Content,
 		Truncated:    cr.Choices[0].FinishReason == "length",
 		Upstream:     up.Name,
-		Model:        params.Model,
+		Model:        actualModel,
 		InputTokens:  cr.Usage.PromptTokens,
 		OutputTokens: cr.Usage.CompletionTokens,
 	}, nil

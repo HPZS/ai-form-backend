@@ -27,3 +27,6 @@ web/node_modules/
 # IDE
 .idea/
 .vscode/
+
+# 本机隔离验收数据、令牌和模型日志
+/.artifacts/

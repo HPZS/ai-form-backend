@@ -10,3 +10,8 @@ bin/
 web/node_modules/
 web/src/
 docs/
+
+# 隔离验收中的本地令牌、运行日志和二进制不可进入构建上下文
+.artifacts/
+*.exe
+*.log

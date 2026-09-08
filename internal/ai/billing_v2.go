@@ -19,11 +19,17 @@ import (
 )
 
 // EnableBillingV2 只在应用入口启用；旧测试仍覆盖历史版本的重放与账务行为。
+func (g *Gateway) PauseNewPaidCalls(paused bool) { g.billingPaused = paused }
+
 func (g *Gateway) EnableBillingV2(key string) { g.billingV2 = true; g.digestKey = []byte(key) }
 
 func BillingError(c *gin.Context, err error) {
 	status, code := 500, "INTERNAL"
 	switch {
+	case errors.Is(err, credits.ErrRefundAmount):
+		status, code = 400, "REFUND_EXCEEDS_CHARGE"
+	case errors.Is(err, credits.ErrFundsRevoked):
+		status, code = 503, "BILLING_FUNDS_REVOKED"
 	case errors.Is(err, credits.ErrAuthorization):
 		status, code = 402, "BILLING_AUTHORIZATION_REQUIRED"
 	case errors.Is(err, credits.ErrBudget):
@@ -75,6 +81,9 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 	var r model.AIRequest
 	execute, replay := false, false
 	err = g.db.Transaction(func(tx *gorm.DB) error {
+		if err := c.Request.Context().Err(); err != nil {
+			return err
+		}
 		if err := model.LockUser(tx, userID); err != nil {
 			return err
 		}
@@ -84,6 +93,10 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 				return credits.ErrConflict
 			}
 			replay = true
+			if r.PolicyVersion != credits.PolicyV2 && r.Status == model.AIReqPending && time.Now().After(r.LeaseExpiresAt) {
+				r.Status, r.BillingReason = credits.RequestFailed, "legacy_execution_expired"
+				return tx.Save(&r).Error
+			}
 			if r.PolicyVersion == credits.PolicyV2 && r.Status == model.AIReqPending && time.Now().After(r.LeaseExpiresAt) {
 				if r.ExecutionAttempts >= 3 || time.Since(r.CreatedAt) > 10*time.Minute {
 					if err := credits.ReleaseRequest(tx, &r); err != nil {
@@ -114,6 +127,9 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 		if !p.Enabled {
 			return errCapabilityDisabled
 		}
+		if p.BillingMode == credits.ModePerCall && g.billingPaused {
+			return errBillingPaused
+		}
 		if p.BillingMode == credits.ModePerCall && meta.BillingProtocolVersion != 2 {
 			return errClientUpgrade
 		}
@@ -132,9 +148,16 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 				return err
 			}
 		}
+		if err := c.Request.Context().Err(); err != nil {
+			return err
+		}
 		execute = true
 		return tx.Create(&r).Error
 	})
+	if errors.Is(err, errBillingPaused) {
+		apiErr(c, 503, "BILLING_PAUSED", "新的积分调用暂时暂停，历史结果和订阅包含能力仍可用")
+		return
+	}
 	if errors.Is(err, errClientUpgrade) {
 		apiErr(c, 426, "BILLING_CLIENT_UPGRADE_REQUIRED", "计费规则已更新，请升级插件并确认按次费用后继续")
 		return
@@ -160,6 +183,7 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 	g.respondV2(c, &r, replay, meta.BillingProtocolVersion == 2)
 }
 
+var errBillingPaused = errors.New("新积分调用已暂停")
 var errClientUpgrade = errors.New("计费客户端需升级")
 var errCapabilityDisabled = errors.New("能力已停用")
 
@@ -180,6 +204,31 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callChainTimeout)
 	defer cancel()
+	var attempts []AttemptUsage
+	if r.UsageDetails != "" {
+		if err := json.Unmarshal([]byte(r.UsageDetails), &attempts); err != nil {
+			g.failV2(r, "usage_invalid", err)
+			return
+		}
+	}
+	ctx = withUsageObserver(ctx, func(item AttemptUsage) {
+		attempts = append(attempts, item)
+		// 每次上游结束即持久化，进程中断仍能追溯已发生的技术尝试。
+		raw, err := json.Marshal(attempts)
+		if err != nil {
+			log.Printf("[AI-USAGE-ENCODE] request=%s err=%v", r.RequestID, err)
+			return
+		}
+		r.UsageDetails = string(raw)
+		r.InputTokens, r.OutputTokens = 0, 0
+		for _, a := range attempts {
+			r.InputTokens += a.InputTokens
+			r.OutputTokens += a.OutputTokens
+		}
+		if err = g.db.Model(&model.AIRequest{}).Where("id = ? AND lease_token = ?", r.ID, r.LeaseToken).Updates(map[string]any{"usage_details": r.UsageDetails, "input_tokens": r.InputTokens, "output_tokens": r.OutputTokens}).Error; err != nil {
+			log.Printf("[AI-USAGE-PERSIST] request=%s err=%v", r.RequestID, err)
+		}
+	})
 	var result any
 	usage := CallResult{}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -206,8 +255,6 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 			messages = append(messages, ChatMessage{Role: "user", Content: TaskAgentRepairMessage(req, err)})
 		}
 	}
-	r.InputTokens += usage.InputTokens
-	r.OutputTokens += usage.OutputTokens
 	r.Upstream, r.Model = usage.Upstream, usage.Model
 	r.PromptVersion, r.SchemaVersion, r.LatencyMs = promptVer, "v1", int(time.Since(start).Milliseconds())
 	if err != nil {
@@ -273,6 +320,7 @@ func (g *Gateway) failV2(r *model.AIRequest, reason string, cause error) {
 			return err
 		}
 		current.Status, current.BillingReason = credits.RequestFailed, reason
+		current.UsageDetails = r.UsageDetails
 		current.InputTokens, current.OutputTokens = r.InputTokens, r.OutputTokens
 		current.Model, current.Upstream = r.Model, r.Upstream
 		current.LatencyMs, current.PromptVersion, current.SchemaVersion = r.LatencyMs, r.PromptVersion, r.SchemaVersion

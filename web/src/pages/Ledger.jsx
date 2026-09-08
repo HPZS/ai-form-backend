@@ -1,5 +1,6 @@
 // ai-form-backend console - AGPL-3.0
 // 积分流水:页码分页,只增不改的账目。
+import BillingRequests from '../components/BillingRequests';
 import React, { useEffect, useState } from 'react';
 import { get } from '../api.js';
 import { Card, Table, Pagination, toast, fmtTime, fmtNum } from '../ui';
@@ -33,6 +34,7 @@ export default function Ledger() {
   const columns = [
     { title: '时间', key: 'CreatedAt', width: 180, render: (r) => <span className="num muted">{fmtTime(r.CreatedAt)}</span> },
     { title: '事项', key: 'Capability', render: (r) => <span className="cell-title">{capNames[r.Capability] || r.Capability || '—'}</span> },
+    { title: '关联请求', key: 'RequestID', render: (r) => <div className="cell-sub mono">{r.RefundOfRequestID || r.RequestID || '—'}{r.RefundID && <div>返还：{r.Reason}</div>}</div> },
     { title: '单价', key: 'PriceSnapshot', align: 'right', render: (r) => <span className="num muted">{r.PriceSnapshot ?? '—'}</span> },
     {
       title: '变动', key: 'Delta', align: 'right',
@@ -42,9 +44,9 @@ export default function Ledger() {
   ];
 
   return (
-    <Card flush title="流水记录">
+    <div className="stack-16"><BillingRequests /><Card flush title="流水记录">
       <Table columns={columns} rows={data.entries} rowKey="ID" loading={loading} empty="还没有流水记录" />
       <Pagination page={page} pageSize={PAGE_SIZE} total={data.total} loading={loading} onChange={setPage} />
-    </Card>
+    </Card></div>
   );
 }

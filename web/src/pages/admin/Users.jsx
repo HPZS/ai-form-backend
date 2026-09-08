@@ -1,4 +1,5 @@
 // ai-form-backend console - AGPL-3.0
+import BillingRequests from '../../components/BillingRequests';
 import React, { useEffect, useState } from 'react';
 import { get, put, post, api } from '../../api.js';
 import { Card, Table, LoadMore, Button, Tag, Confirm, Dialog, NumberInput, Select, toast, fmtTime, fmtNum } from '../../ui';
@@ -98,6 +99,7 @@ export default function Users() {
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(false);
   const [creditsUser, setCreditsUser] = useState(null);
+  const [billingUser,setBillingUser]=useState(null);
 
   const load = async (beforeId) => {
     setLoading(true);
@@ -129,6 +131,7 @@ export default function Users() {
       title: '', key: 'ops', render: (r) => (
         <div className="actions">
           <Button size="sm" onClick={() => setCreditsUser(r)}>额度</Button>
+          <Button size="sm" onClick={() => setBillingUser(r)}>账单 / 返还</Button>
           {r.Role === 'admin' ? null : r.Status === 'active' ? (
             <Confirm title={`封禁 ${r.Email}?将立即全端登出。`} okText="封禁" onConfirm={() => setStatus(r, 'banned')}>
               <Button size="sm" variant="danger">封禁</Button>
@@ -145,6 +148,7 @@ export default function Users() {
     <Card flush title="用户列表" extra={rows.length > 0 ? `已加载 ${rows.length} 人` : null}>
       <Table columns={columns} rows={rows} rowKey="ID" loading={loading} />
       <LoadMore done={done} loading={loading} count={rows.length} onClick={() => load(rows[rows.length - 1].ID)} />
+      {billingUser && <Dialog open title={`调用账单 · ${billingUser.Email}`} width={1000} onClose={()=>setBillingUser(null)}><BillingRequests userId={billingUser.ID}/></Dialog>}
       {creditsUser && <CreditsDialog user={creditsUser} onClose={() => setCreditsUser(null)} />}
     </Card>
   );

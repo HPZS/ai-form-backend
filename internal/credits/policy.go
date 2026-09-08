@@ -16,6 +16,7 @@ const SettlementPending = "settlement_pending"
 const RequestFailed = "failed"
 
 var (
+	ErrRefundAmount  = errors.New("返还超过原实扣")
 	ErrBudget        = errors.New("已达到本任务消费上限")
 	ErrAuthorization = errors.New("需要确认本任务费用")
 	ErrQuoteExpired  = errors.New("报价或价格授权已过期，请重新确认")
@@ -32,6 +33,9 @@ func DefaultMode(capability string) string {
 }
 
 func ValidPrice(p model.CapabilityPrice) bool {
+	if p.Capability != "" && p.BillingMode != DefaultMode(p.Capability) {
+		return false
+	}
 	return p.PriceVersion > 0 && ((p.BillingMode == ModeIncluded && p.Credits == 0) || (p.BillingMode == ModePerCall && p.Credits > 0 && p.Credits <= 1_000_000))
 }
 

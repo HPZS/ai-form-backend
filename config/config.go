@@ -25,7 +25,8 @@ type Config struct {
 	SMTP SMTPConfig
 	Epay EpayConfig
 
-	PromptsDir string
+	BillingPaused bool
+	PromptsDir    string
 }
 
 type SMTPConfig struct {
@@ -89,7 +90,8 @@ func Load() (*Config, error) {
 			PID: os.Getenv("EPAY_PID"),
 			Key: os.Getenv("EPAY_KEY"),
 		},
-		PromptsDir: env("PROMPTS_DIR", "prompts/private"),
+		BillingPaused: env("BILLING_PAUSED", "false") == "true",
+		PromptsDir:    env("PROMPTS_DIR", "prompts/private"),
 	}
 	if c.JWTSecret == "" {
 		return nil, fmt.Errorf("必须设置 JWT_SECRET")
