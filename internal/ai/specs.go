@@ -749,6 +749,7 @@ func truncRunes(s string, n int) string {
 // Specs 返回全部能力规格,按注册顺序即路由顺序。
 func Specs() []Spec {
 	return []Spec{
+		sourceImageSpec(),
 		{
 			Name:   "compile_input",
 			NewReq: func() Request { return &CompileInputReq{} },
