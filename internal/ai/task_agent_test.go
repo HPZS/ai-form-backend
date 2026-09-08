@@ -43,7 +43,7 @@ func TestTaskAgentPromptAndRequestLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v1" {
+	if _, user, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v2" || !strings.Contains(user, "read_source") || !strings.Contains(user, "advance_form") {
 		t.Fatalf("prompt: %s %v", version, err)
 	}
 	req := &TaskAgentReq{Meta: Meta{RequestID: "00000000-0000-4000-8000-000000000001", TaskID: "task"}, SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", CallIndex: 1, SaveMode: "automatic", Tools: []TaskToolDescription{{Name: "read", Effect: "read"}}}
