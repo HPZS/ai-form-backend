@@ -124,6 +124,22 @@ func Quote(db *gorm.DB, userID int64, taskID string, matchCalls, generateCalls i
 	if matchCalls < 0 || generateCalls < 0 || matchCalls > 1_000_000 || generateCalls > 1_000_000 {
 		return nil, fmt.Errorf("预计次数不合法")
 	}
+	requested := []string{}
+	if matchCalls > 0 {
+		requested = append(requested, "match_columns")
+	}
+	if generateCalls > 0 {
+		requested = append(requested, "generate_field")
+	}
+	if len(requested) > 0 {
+		var disabled int64
+		if err := db.Model(&model.CapabilityPrice{}).Where("capability IN ? AND enabled = ?", requested, false).Count(&disabled).Error; err != nil {
+			return nil, err
+		}
+		if disabled > 0 {
+			return nil, ErrCapabilityDisabled
+		}
+	}
 	prices, err := Prices(db)
 	if err != nil {
 		return nil, err

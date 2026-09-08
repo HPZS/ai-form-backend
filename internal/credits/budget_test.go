@@ -149,3 +149,16 @@ func TestBudgetFailureReleasesAndVersionRejects(t *testing.T) {
 		t.Fatalf("旧报价不能按新价确认: %v", err)
 	}
 }
+
+func TestDisabledGenerationDoesNotDisableMatching(t *testing.T) {
+	db, uid, task, _ := budgetFixture(t, 100)
+	if err := db.Model(&model.CapabilityPrice{}).Where("capability = ?", "generate_field").Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Quote(db, uid, task, 1, 0); err != nil {
+		t.Fatalf("停用生成不应阻断匹配报价: %v", err)
+	}
+	if _, err := Quote(db, uid, task, 0, 1); err == nil {
+		t.Fatal("停用能力必须在报价时拒绝")
+	}
+}

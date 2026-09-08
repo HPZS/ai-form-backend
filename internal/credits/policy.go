@@ -16,13 +16,14 @@ const SettlementPending = "settlement_pending"
 const RequestFailed = "failed"
 
 var (
-	ErrRefundAmount  = errors.New("返还超过原实扣")
-	ErrBudget        = errors.New("已达到本任务消费上限")
-	ErrAuthorization = errors.New("需要确认本任务费用")
-	ErrQuoteExpired  = errors.New("报价或价格授权已过期，请重新确认")
-	ErrConfig        = errors.New("能力计费配置不完整或不一致")
-	ErrConflict      = errors.New("请求身份与原始内容不一致")
-	ErrFundsRevoked  = errors.New("已预留积分被作废，需要核对账务")
+	ErrCapabilityDisabled = errors.New("本次报价包含已停用的能力")
+	ErrRefundAmount       = errors.New("返还超过原实扣")
+	ErrBudget             = errors.New("已达到本任务消费上限")
+	ErrAuthorization      = errors.New("需要确认本任务费用")
+	ErrQuoteExpired       = errors.New("报价或价格授权已过期，请重新确认")
+	ErrConfig             = errors.New("能力计费配置不完整或不一致")
+	ErrConflict           = errors.New("请求身份与原始内容不一致")
+	ErrFundsRevoked       = errors.New("已预留积分被作废，需要核对账务")
 )
 
 func DefaultMode(capability string) string {
@@ -48,7 +49,7 @@ func Prices(db *gorm.DB) (map[string]Price, error) {
 	}
 	out := map[string]Price{}
 	for _, p := range rows {
-		if !p.Enabled || !ValidPrice(p) || p.BillingMode != ModePerCall {
+		if !ValidPrice(p) || p.BillingMode != ModePerCall {
 			return nil, fmt.Errorf("%w: %s", ErrConfig, p.Capability)
 		}
 		out[p.Capability] = Price{p.Credits, p.PriceVersion}

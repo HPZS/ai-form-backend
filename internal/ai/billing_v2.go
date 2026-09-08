@@ -26,6 +26,8 @@ func (g *Gateway) EnableBillingV2(key string) { g.billingV2 = true; g.digestKey 
 func BillingError(c *gin.Context, err error) {
 	status, code := 500, "INTERNAL"
 	switch {
+	case errors.Is(err, credits.ErrCapabilityDisabled):
+		status, code = 403, "CAPABILITY_DISABLED"
 	case errors.Is(err, credits.ErrRefundAmount):
 		status, code = 400, "REFUND_EXCEEDS_CHARGE"
 	case errors.Is(err, credits.ErrFundsRevoked):
