@@ -135,6 +135,7 @@ func (s *Server) billingRequests(c *gin.Context) {
 	}
 	// 显式字段投影，业务缓存和摘要不能流入账单列表。
 	var rows []struct {
+		Name          string    `json:"name" gorm:"-"`
 		RequestID     string    `json:"requestId"`
 		TaskID        string    `json:"taskId"`
 		Capability    string    `json:"capability"`
@@ -150,7 +151,12 @@ func (s *Server) billingRequests(c *gin.Context) {
 		ai.BillingError(c, err)
 		return
 	}
+	names := map[string]string{}
+	for _, meta := range ai.CapabilityMetas() {
+		names[meta.Key] = meta.Name
+	}
 	for i := range rows {
+		rows[i].Name = names[rows[i].Capability]
 		if err := s.db.Model(&model.CreditLedger{}).Where("user_id = ? AND refund_of_request_id = ? AND delta > 0", uid, rows[i].RequestID).Select("COALESCE(SUM(delta),0)").Scan(&rows[i].Refunded).Error; err != nil {
 			ai.BillingError(c, err)
 			return

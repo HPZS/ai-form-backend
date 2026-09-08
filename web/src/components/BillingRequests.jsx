@@ -15,7 +15,7 @@ export default function BillingRequests({ userId }) {
  };
  const columns=[
   {title:'时间 / 请求',key:'createdAt',render:r=><div><span>{fmtTime(r.createdAt)}</span><div className="cell-sub mono">{r.requestId}</div><div className="cell-sub">任务：{r.taskId||'历史未归属'}</div></div>},
-  {title:'能力 / 原因',key:'capability',render:r=><div>{r.capability==='match_columns'?'字段匹配':r.capability==='generate_field'?'内容生成':r.capability}<div className="cell-sub">{reasons[r.reason]||r.reason||'历史计费规则'} · {r.mode==='included'?'订阅包含':r.mode==='per_call'?'逐次积分':'历史政策'}</div></div>},
+  {title:'能力 / 原因',key:'capability',render:r=><div>{r.name||r.capability}<div className="cell-sub">{reasons[r.reason]||r.reason||'历史计费规则'} · {r.mode==='included'?'订阅包含':r.mode==='per_call'?'逐次积分':'历史政策'}</div></div>},
   {title:'状态',key:'status',render:r=>statuses[r.status]||r.status},
   {title:'实扣 / 返还 / 净扣',key:'charged',render:r=>`${r.charged} / ${r.refunded} / ${r.charged-r.refunded}`},
   ...(userId?[{title:'操作',key:'refund',render:r=>r.charged>r.refunded?<Button size="sm" onClick={()=>setRefund({id:crypto.randomUUID(),requestId:r.requestId,max:r.charged-r.refunded,amount:r.charged-r.refunded,reason:''})}>返还积分</Button>:null}]:[])
