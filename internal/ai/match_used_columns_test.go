@@ -91,7 +91,7 @@ func TestUsedColumnsRespectsHeaderLimit(t *testing.T) {
 	defer upstream.Close()
 	router, _, _ := setupGateway(t, upstream)
 
-	cols := make([]string, 101)
+	cols := make([]string, SourceColumnLimit+1)
 	for i := range cols {
 		cols[i] = "c"
 	}

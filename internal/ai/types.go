@@ -122,9 +122,12 @@ func checkButtons(name string, buttons []ButtonInfo, max int) error {
 	return nil
 }
 
+// SourceColumnLimit 与插件 sourceLimits.ts 一致，独立于网页字段数量限制。
+const SourceColumnLimit = 1024
+
 func checkHeaders(headers []string) error {
-	if len(headers) > 100 {
-		return fmt.Errorf("headers 数量超限(100)")
+	if len(headers) > SourceColumnLimit {
+		return fmt.Errorf("headers 数量超限(%d)，实际 %d", SourceColumnLimit, len(headers))
 	}
 	for _, h := range headers {
 		if err := capStr("header", h, 200); err != nil {
@@ -135,8 +138,8 @@ func checkHeaders(headers []string) error {
 }
 
 func checkRow(name string, row map[string]string, cellMax int) error {
-	if len(row) > 100 {
-		return fmt.Errorf("%s 列数超限(100)", name)
+	if len(row) > SourceColumnLimit {
+		return fmt.Errorf("%s 列数超限(%d)，实际 %d", name, SourceColumnLimit, len(row))
 	}
 	for k, v := range row {
 		if err := capStr("列名", k, 200); err != nil {
@@ -846,7 +849,7 @@ func (r *DetectGroupingReq) Validate() error {
 	if err := checkHeaders(r.Headers); err != nil {
 		return err
 	}
-	if len(r.DistinctCounts) > 100 {
+	if len(r.DistinctCounts) > SourceColumnLimit {
 		return fmt.Errorf("distinctCounts 数量超限")
 	}
 	return checkRows("sampleRows", r.SampleRows, 5, 200)
@@ -883,11 +886,11 @@ func (r *DetectIdentityReq) Validate() error {
 	if err := checkHeaders(r.Headers); err != nil {
 		return err
 	}
-	if len(r.ValueCounts) > 100 {
-		return fmt.Errorf("valueCounts 数量超限(100)")
+	if len(r.ValueCounts) > SourceColumnLimit {
+		return fmt.Errorf("valueCounts 数量超限(%d)", SourceColumnLimit)
 	}
-	if len(r.SampleValues) > 100 {
-		return fmt.Errorf("sampleValues 数量超限(100)")
+	if len(r.SampleValues) > SourceColumnLimit {
+		return fmt.Errorf("sampleValues 数量超限(%d)", SourceColumnLimit)
 	}
 	for k, vs := range r.SampleValues {
 		if err := capStr("列名", k, 200); err != nil {

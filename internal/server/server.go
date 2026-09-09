@@ -65,7 +65,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev14: 新增 agent_task_step，支持任务工具循环与必要的人工交接。
 // rev15: 字段匹配接收多条真实代表性样本。
 // rev16: 新增独立的资料图像区域识别与复核契约。
-const APIRevision = 19
+// rev20: 完整来源、样本行和列统计统一支持 1024 列。
+const APIRevision = 20
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

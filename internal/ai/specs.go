@@ -706,7 +706,7 @@ func validateCompiledInput(req *CompileInputReq, out *compiledInputPlan) error {
 		default:
 			return fmt.Errorf("recordMode 必须是 object 或 array")
 		}
-		if len(records) == 0 || len(out.Fields) == 0 || len(out.Fields) > 100 {
+		if len(records) == 0 || len(out.Fields) == 0 || len(out.Fields) > SourceColumnLimit {
 			return fmt.Errorf("记录或字段为空/超限")
 		}
 		names := map[string]bool{}
@@ -743,7 +743,7 @@ func validateCompiledInput(req *CompileInputReq, out *compiledInputPlan) error {
 		return fmt.Errorf("records 为空或超限")
 	}
 	for _, record := range out.Records {
-		if len(record.Fields) == 0 || len(record.Fields) > 100 {
+		if len(record.Fields) == 0 || len(record.Fields) > SourceColumnLimit {
 			return fmt.Errorf("文本记录字段为空或超限")
 		}
 		names := map[string]bool{}
