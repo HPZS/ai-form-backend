@@ -65,7 +65,7 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev14: 新增 agent_task_step，支持任务工具循环与必要的人工交接。
 // rev15: 字段匹配接收多条真实代表性样本。
 // rev16: 新增独立的资料图像区域识别与复核契约。
-const APIRevision = 18
+const APIRevision = 19
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -1263,12 +1263,13 @@ func (s *Server) adminAdjustSub(c *gin.Context) {
 
 func (s *Server) about(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"name":                   "ai-form-backend",
-		"apiRevision":            APIRevision,
-		"billingProtocolVersion": 2,
-		"billingPolicyVersion":   credits.PolicyV2,
-		"license":                "AGPL-3.0",
-		"source":                 sourceRepo,
+		"name":                       "ai-form-backend",
+		"apiRevision":                APIRevision,
+		"interactionProtocolVersion": 1,
+		"billingProtocolVersion":     2,
+		"billingPolicyVersion":       credits.PolicyV2,
+		"license":                    "AGPL-3.0",
+		"source":                     sourceRepo,
 		"attribution": []string{
 			"Frontend design and development by New API contributors.",
 			"Based on new-api: https://github.com/QuantumNous/new-api",

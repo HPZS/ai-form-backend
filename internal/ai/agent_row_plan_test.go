@@ -48,7 +48,7 @@ func TestAgentRowPlanPromptNeverRequestsRawValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染 agent_row_plan 提示词失败: %v", err)
 	}
-	if version != "v1" || !strings.Contains(user, "valueBinding") || !strings.Contains(user, "不得生成提交") {
+	if version != "v2" || !strings.Contains(user, "valueBinding") || !strings.Contains(user, "不得生成提交") {
 		t.Fatalf("行级提示词缺少本地值绑定或提交边界: version=%s", version)
 	}
 }

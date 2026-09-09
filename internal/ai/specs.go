@@ -13,9 +13,15 @@ import (
 )
 
 type agentAction struct {
-	Op                 string   `json:"op"`
-	TargetNodeID       string   `json:"targetNodeId,omitempty"`
-	ValueRef           string   `json:"valueRef,omitempty"`
+	Op           string `json:"op"`
+	TargetNodeID string `json:"targetNodeId,omitempty"`
+	ValueRef     string `json:"valueRef,omitempty"`
+	ValuePart    string `json:"valuePart,omitempty"`
+	ValueSlice   *struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+	} `json:"valueSlice,omitempty"`
+	Selected           *bool    `json:"selected,omitempty"`
 	Transform          string   `json:"transform,omitempty"`
 	Key                string   `json:"key,omitempty"`
 	OptionNodeID       string   `json:"optionNodeId,omitempty"`
@@ -151,8 +157,24 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 	if err != nil {
 		return out, err
 	}
+	if req.InteractionVersion == 0 {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(out.Action, &fields); err != nil {
+			return out, err
+		}
+		for _, key := range []string{"valuePart", "valueSlice", "selected"} {
+			if _, ok := fields[key]; ok {
+				return out, fmt.Errorf("新动作参数需要交互协议版本 1")
+			}
+		}
+	}
 	projected := func(id string) bool {
-		return id != "" && inStrings(req.ProjectedNodeIDs, id) && !inStrings(req.ForbiddenNodeIDs, id)
+		return id != "" && inStrings(req.ProjectedNodeIDs, id) && !inStrings(req.ForbiddenNodeIDs, id) && (req.InteractionVersion != 1 || inStrings(req.AllowedNodeIDs, id))
+	}
+	if req.InteractionVersion == 1 {
+		if err := validateInteractionAction(req, out, action); err != nil {
+			return out, err
+		}
 	}
 	if action.TargetNodeID != "" && !projected(action.TargetNodeID) {
 		return out, fmt.Errorf("action 引用了未投影或禁止的 targetNodeId")
@@ -170,10 +192,13 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 			return out, fmt.Errorf("%s 缺少合法 targetNodeId", action.Op)
 		}
 	case "replace-text":
-		if !projected(action.TargetNodeID) || action.ValueRef == "" || action.ValueRef != req.ValueRef {
+		if !projected(action.TargetNodeID) || action.ValueRef == "" || !req.hasValueRef(action.ValueRef) {
 			return out, fmt.Errorf("replace-text 引用了未授权目标或值句柄")
 		}
 		transform := action.Transform
+		if action.ValueRef != req.ValueRef && transform != "" && transform != "identity" {
+			return out, fmt.Errorf("子值只允许 identity 转换")
+		}
 		if transform == "" {
 			transform = "identity"
 		}

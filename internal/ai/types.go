@@ -222,34 +222,67 @@ func (r *RepairInputPlanReq) Validate() error {
 }
 
 type AgentHistoryItem struct {
-	Action  string `json:"action"`
-	Verdict string `json:"verdict"`
+	Action      string `json:"action"`
+	Verdict     string `json:"verdict"`
+	Dispatch    string `json:"dispatch,omitempty"`
+	Effect      string `json:"effect,omitempty"`
+	GoalVerdict string `json:"goalVerdict,omitempty"`
+	BeforeState string `json:"beforeState,omitempty"`
+	AfterState  string `json:"afterState,omitempty"`
+	FailureCode string `json:"failureCode,omitempty"`
+}
+
+type GoalValuePart struct {
+	ID        string `json:"id"`
+	Ref       string `json:"ref"`
+	Hint      string `json:"hint"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type GoalValueSemantics struct {
+	Version   int             `json:"version"`
+	Kind      string          `json:"kind"`
+	Precision string          `json:"precision,omitempty"`
+	Parts     []GoalValuePart `json:"parts"`
+}
+
+type GoalValueObservation struct {
+	NodeID        string   `json:"nodeId"`
+	Kind          string   `json:"kind"`
+	MatchingParts []string `json:"matchingParts"`
+	MissingParts  []string `json:"missingParts"`
 }
 
 // AgentStepReq 只携带页面脱敏投影、opaque 值句柄和最小语义提示，绝不携带 Vault 原值。
 // ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
 type AgentStepReq struct {
 	Meta
-	SnapshotID         string             `json:"snapshotId"`
-	ContextDigest      string             `json:"contextDigest"`
-	GoalID             string             `json:"goalId"`
-	GoalKind           string             `json:"goalKind"`
-	FieldSemanticName  string             `json:"fieldSemanticName,omitempty"`
-	ValueRef           string             `json:"valueRef,omitempty"`
-	ValueShape         string             `json:"valueShape,omitempty"`
-	ValueHint          string             `json:"valueHint,omitempty"`
-	AllowedTransforms  []string           `json:"allowedTransforms,omitempty"`
-	RiskLimit          string             `json:"riskLimit"`
-	Projection         string             `json:"projection"`
-	ProjectedNodeIDs   []string           `json:"projectedNodeIds"`
-	ProjectedRegionIDs []string           `json:"projectedRegionIds"`
-	AllowedRootIDs     []string           `json:"allowedRootIds,omitempty"`
-	ForbiddenNodeIDs   []string           `json:"forbiddenNodeIds,omitempty"`
-	KnownSubmitNodeIDs []string           `json:"knownSubmitNodeIds,omitempty"`
-	Skills             []string           `json:"skills,omitempty"`
-	History            []AgentHistoryItem `json:"history,omitempty"`
-	CallIndex          int                `json:"callIndex"`
-	VisualAuthorized   bool               `json:"visualAuthorized"`
+	ValueObservations  []GoalValueObservation `json:"valueObservations,omitempty"`
+	InteractionVersion int                    `json:"interactionVersion,omitempty"`
+	SourceColumnRef    string                 `json:"sourceColumnRef,omitempty"`
+	ValueSemantics     *GoalValueSemantics    `json:"valueSemantics,omitempty"`
+	AllowedNodeIDs     []string               `json:"allowedNodeIds,omitempty"`
+	ScopeRevision      string                 `json:"scopeRevision,omitempty"`
+	SnapshotID         string                 `json:"snapshotId"`
+	ContextDigest      string                 `json:"contextDigest"`
+	GoalID             string                 `json:"goalId"`
+	GoalKind           string                 `json:"goalKind"`
+	FieldSemanticName  string                 `json:"fieldSemanticName,omitempty"`
+	ValueRef           string                 `json:"valueRef,omitempty"`
+	ValueShape         string                 `json:"valueShape,omitempty"`
+	ValueHint          string                 `json:"valueHint,omitempty"`
+	AllowedTransforms  []string               `json:"allowedTransforms,omitempty"`
+	RiskLimit          string                 `json:"riskLimit"`
+	Projection         string                 `json:"projection"`
+	ProjectedNodeIDs   []string               `json:"projectedNodeIds"`
+	ProjectedRegionIDs []string               `json:"projectedRegionIds"`
+	AllowedRootIDs     []string               `json:"allowedRootIds,omitempty"`
+	ForbiddenNodeIDs   []string               `json:"forbiddenNodeIds,omitempty"`
+	KnownSubmitNodeIDs []string               `json:"knownSubmitNodeIds,omitempty"`
+	Skills             []string               `json:"skills,omitempty"`
+	History            []AgentHistoryItem     `json:"history,omitempty"`
+	CallIndex          int                    `json:"callIndex"`
+	VisualAuthorized   bool                   `json:"visualAuthorized"`
 }
 
 // AgentRowPlanningGoalReq 不携带业务原值或 Vault 句柄；模型只能用 goal-value 占位绑定当前 Goal 的本地值。
@@ -397,6 +430,9 @@ func (r *AuditAgentCheckpointReq) Validate() error {
 		return fmt.Errorf("checkpoint.history 数量超限(20)")
 	}
 	for _, item := range c.History {
+		if err := validateInteractionHistory(item); err != nil {
+			return err
+		}
 		if err := capStr("checkpoint.history.action", item.Action, 300); err != nil {
 			return err
 		}
@@ -428,6 +464,9 @@ func checkStringList(name string, values []string, max, maxLen int) error {
 }
 
 func (r *AgentStepReq) Validate() error {
+	if err := r.validateInteraction(); err != nil {
+		return err
+	}
 	if err := r.validateMeta(); err != nil {
 		return err
 	}
@@ -457,7 +496,7 @@ func (r *AgentStepReq) Validate() error {
 	if err := checkStringList("allowedRootIds", r.AllowedRootIDs, 1000, 100); err != nil {
 		return err
 	}
-	if err := checkStringList("forbiddenNodeIds", r.ForbiddenNodeIDs, 2000, 100); err != nil {
+	if err := checkStringList("forbiddenNodeIds", r.ForbiddenNodeIDs, 20000, 100); err != nil {
 		return err
 	}
 	if err := checkStringList("knownSubmitNodeIds", r.KnownSubmitNodeIDs, 200, 100); err != nil {
@@ -492,7 +531,7 @@ func (r *AgentStepReq) Validate() error {
 			return err
 		}
 	}
-	if r.CallIndex < 0 || r.CallIndex > 20 {
+	if r.CallIndex < 0 || r.CallIndex > 64 {
 		return fmt.Errorf("callIndex 非法")
 	}
 	return nil
