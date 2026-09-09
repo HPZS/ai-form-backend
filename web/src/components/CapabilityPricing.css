@@ -1,5 +1,7 @@
+.capability-pricing-tabs { margin: 16px 0; }
 .capability-pricing { margin: 0 -22px; }
 @media (max-width: 600px) {
+  .capability-pricing-tabs .segmented button { height: auto; min-height: 32px; padding: 6px 4px; font-size: 12px; white-space: nowrap; }
   .capability-pricing .table th:nth-child(2) { width: 92px !important; }
   .capability-pricing .table th:nth-child(3) { width: 82px !important; }
   .capability-pricing .table td, .capability-pricing .table th { padding: 12px 8px; }

@@ -1,16 +1,17 @@
 // 能力说明与价格来自计费服务；打开期间同步配置，不写死收费清单。
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Dialog, Table, Notice } from '../ui';
+import { Dialog, Table, Notice, Segmented } from '../ui';
 import './CapabilityPricing.css';
 
 export default function CapabilityPricing({open,onClose}) {
   const [data,setData]=useState(null);
   const [error,setError]=useState('');
+  const [mode,setMode]=useState('all');
   useEffect(()=>{
     if(!open)return;
     let active=true,timer,controller;
-    setData(null);setError('');
+    setData(null);setError('');setMode('all');
     async function refresh(){
       if(document.hidden){timer=setTimeout(refresh,2000);return;}
       controller=new AbortController();
@@ -24,6 +25,13 @@ export default function CapabilityPricing({open,onClose}) {
     refresh();
     return()=>{active=false;clearTimeout(timer);controller?.abort();};
   },[open]);
+  const capabilities=data||[];
+  const tabs=[
+    {value:'all',label:'全部'},
+    {value:'included',label:'订阅包含'},
+    {value:'per_call',label:'按次扣积分'},
+  ].map(tab=>({...tab,label:`${tab.label} (${data===null?'—':capabilities.filter(item=>tab.value==='all'||item.mode===tab.value).length})`}));
+  const rows=capabilities.filter(item=>mode==='all'||item.mode===mode);
   const columns=[
     {title:'AI 能力',key:'name',render:r=><div><div className="cell-title">{r.name}</div><div className="cell-sub">{r.description}</div></div>},
     {title:'计费方式',key:'mode',width:140,render:r=>r.valid?(r.mode==='included'?'订阅包含':'按次扣积分'):'配置待修复'},
@@ -32,6 +40,7 @@ export default function CapabilityPricing({open,onClose}) {
   return <Dialog open={open} onClose={onClose} title="AI 能力与积分价格" width={900}>
     <p className="muted">订阅包含的能力不额外扣积分；按次能力按每次成功调用结算。本地复用不调用 AI，同一请求重传不重复扣费。表格每 2 秒同步最新配置。</p>
     {error&&<Notice tone="warn">{error}{data?'。下表是上次读取结果，请以恢复连接后的最新价格为准。':''}</Notice>}
-    <div className="capability-pricing"><Table columns={columns} rows={data||[]} rowKey="capability" loading={data===null&&!error} /></div>
+    <div className="capability-pricing-tabs"><Segmented value={mode} onChange={setMode} options={tabs} block /></div>
+    <div className="capability-pricing"><Table columns={columns} rows={rows} rowKey="capability" loading={data===null&&!error} empty={mode==='per_call'?'暂无按次扣积分的 AI 能力':mode==='included'?'暂无订阅包含的 AI 能力':'暂无 AI 能力'} /></div>
   </Dialog>;
 }
