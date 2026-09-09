@@ -1,0 +1,7 @@
+.capability-pricing { margin: 0 -22px; }
+@media (max-width: 600px) {
+  .capability-pricing .table th:nth-child(2) { width: 92px !important; }
+  .capability-pricing .table th:nth-child(3) { width: 82px !important; }
+  .capability-pricing .table td, .capability-pricing .table th { padding: 12px 8px; }
+  .capability-pricing .table .cell-sub { display: none; }
+}
