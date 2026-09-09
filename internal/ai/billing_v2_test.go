@@ -282,8 +282,25 @@ func TestV2EmptyColumnsAndPriceSnapshot(t *testing.T) {
 	paid := v2Body(t, strings.Replace(matchBody, "11111111-1111-4111-8111-111111111111", uuid.NewString(), 1), task, auth)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(paid)))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"unitPrice":5`) {
-		t.Fatalf("有效授权沿用价格快照 %d %s", w.Code, w.Body.String())
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "BILLING_QUOTE_EXPIRED") {
+		t.Fatalf("价格变更后新调用不能沿用旧授权 %d %s", w.Code, w.Body.String())
+	}
+	q, err := credits.Quote(db, uid, task, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := credits.Confirm(db, uid, q.ID, q.Amount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paid = strings.ReplaceAll(paid, auth, h.ID)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/ai/match-columns", strings.NewReader(paid)))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"unitPrice":9`) {
+		t.Fatal(w.Body.String())
+	}
+	if err := db.Model(&model.CapabilityPrice{}).Where("capability = ?", "match_columns").Updates(map[string]any{"credits": 0, "billing_mode": "included", "price_version": 3}).Error; err != nil {
+		t.Fatal(err)
 	}
 	if e := db.Model(&model.AIRequest{}).Where("task_id = ?", task).Update("created_at", time.Now().Add(-48*time.Hour)).Error; e != nil {
 		t.Fatal(e)
@@ -294,7 +311,7 @@ func TestV2EmptyColumnsAndPriceSnapshot(t *testing.T) {
 		t.Fatal("缓存从结果生成时计 24 小时", w.Body.String())
 	}
 	total, e := credits.Totals(db, uid, task)
-	if e != nil || total.Charged != 5 {
+	if e != nil || total.Charged != 9 {
 		t.Fatalf("%+v %v", total, e)
 	}
 }

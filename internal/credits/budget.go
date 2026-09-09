@@ -117,40 +117,39 @@ func allocate(tx *gorm.DB, userID, amount int64) ([]model.BucketAllocation, erro
 	return out, nil
 }
 
+// Quote 保留旧插件的两项计数契约，新客户端使用任意已配置能力的 calls。
 func Quote(db *gorm.DB, userID int64, taskID string, matchCalls, generateCalls int64) (*model.CreditHold, error) {
+	return QuoteCapabilities(db, userID, taskID, map[string]int64{"match_columns": matchCalls, "generate_field": generateCalls})
+}
+
+func QuoteCapabilities(db *gorm.DB, userID int64, taskID string, calls map[string]int64) (*model.CreditHold, error) {
 	if _, err := uuid.Parse(taskID); err != nil {
 		return nil, ErrAuthorization
-	}
-	if matchCalls < 0 || generateCalls < 0 || matchCalls > 1_000_000 || generateCalls > 1_000_000 {
-		return nil, fmt.Errorf("预计次数不合法")
-	}
-	requested := []string{}
-	if matchCalls > 0 {
-		requested = append(requested, "match_columns")
-	}
-	if generateCalls > 0 {
-		requested = append(requested, "generate_field")
-	}
-	if len(requested) > 0 {
-		var disabled int64
-		if err := db.Model(&model.CapabilityPrice{}).Where("capability IN ? AND enabled = ?", requested, false).Count(&disabled).Error; err != nil {
-			return nil, err
-		}
-		if disabled > 0 {
-			return nil, ErrCapabilityDisabled
-		}
 	}
 	prices, err := Prices(db)
 	if err != nil {
 		return nil, err
 	}
+	var estimated int64
+	for capability, count := range calls {
+		if count < 0 || count > 1_000_000 {
+			return nil, fmt.Errorf("预计次数不合法")
+		}
+		price, ok := prices[capability]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", ErrConfig, capability)
+		}
+		estimated += count * price.Credits
+	}
 	totals, err := Totals(db, userID, taskID)
 	if err != nil {
 		return nil, err
 	}
+	if totals.Charged+totals.InFlight+estimated > 1_000_000_000_000 {
+		return nil, ErrBudget
+	}
 	q := model.CreditHold{ID: uuid.NewString(), UserID: userID, TaskID: taskID, PolicyVersion: PolicyV2, Status: "quoted", Prices: prices,
-		Amount:    totals.Charged + totals.InFlight + matchCalls*prices["match_columns"].Credits + generateCalls*prices["generate_field"].Credits,
-		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(10 * time.Minute)}
+		Amount: totals.Charged + totals.InFlight + estimated, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(10 * time.Minute)}
 	if err := db.Create(&q).Error; err != nil {
 		return nil, err
 	}
@@ -234,7 +233,18 @@ func ReserveRequest(tx *gorm.DB, r *model.AIRequest) error {
 	}
 	price, ok := h.Prices[r.Capability]
 	if !ok || price.Credits <= 0 {
+		return ErrQuoteExpired
+	}
+	// 只在接受新请求时核对当前价格；已接受/重放请求仍按原请求快照结算。
+	var current model.CapabilityPrice
+	if err := tx.Where("capability = ?", r.Capability).First(&current).Error; err != nil {
+		return err
+	}
+	if !ValidPrice(current) {
 		return ErrConfig
+	}
+	if current.BillingMode != ModePerCall || price.Version != current.PriceVersion || price.Credits != current.Credits {
+		return ErrQuoteExpired
 	}
 	r.UnitPrice, r.PriceVersion = price.Credits, price.Version
 	totals, err := Totals(tx, r.UserID, r.TaskID)

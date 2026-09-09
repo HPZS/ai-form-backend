@@ -19,18 +19,24 @@ func (s *Server) billingCatalog(c *gin.Context) {
 		internalErr(c, "读取计费目录", err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
+	metas := map[string]ai.CapMeta{}
+	for _, meta := range ai.CapabilityMetas() {
+		metas[meta.Key] = meta
+	}
 	items := []gin.H{}
 	for _, p := range prices {
-		items = append(items, gin.H{"capability": p.Capability, "mode": p.BillingMode, "credits": p.Credits, "priceVersion": p.PriceVersion, "enabled": p.Enabled, "valid": credits.ValidPrice(p)})
+		items = append(items, gin.H{"name": metas[p.Capability].Name, "description": metas[p.Capability].Desc, "capability": p.Capability, "mode": p.BillingMode, "credits": p.Credits, "priceVersion": p.PriceVersion, "enabled": true, "valid": credits.ValidPrice(p)})
 	}
 	c.JSON(200, gin.H{"billingProtocolVersion": 2, "policyVersion": credits.PolicyV2, "capabilities": items})
 }
 
 func (s *Server) billingQuote(c *gin.Context) {
 	var req struct {
-		TaskID        string `json:"taskId"`
-		MatchCalls    int64  `json:"matchCalls"`
-		GenerateCalls int64  `json:"generateCalls"`
+		Calls         map[string]int64 `json:"calls"`
+		TaskID        string           `json:"taskId"`
+		MatchCalls    int64            `json:"matchCalls"`
+		GenerateCalls int64            `json:"generateCalls"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
@@ -40,7 +46,21 @@ func (s *Server) billingQuote(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "任务 ID 或预计次数不合法"})
 		return
 	}
-	quote, err := credits.Quote(s.db, c.GetInt64("userID"), req.TaskID, req.MatchCalls, req.GenerateCalls)
+	if req.Calls != nil && (req.MatchCalls != 0 || req.GenerateCalls != 0) {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "不能混用两种报价计数"})
+		return
+	}
+	calls := req.Calls
+	if calls == nil {
+		calls = map[string]int64{"match_columns": req.MatchCalls, "generate_field": req.GenerateCalls}
+	}
+	for _, count := range calls {
+		if count < 0 || count > 1_000_000 {
+			c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "预计次数不合法"})
+			return
+		}
+	}
+	quote, err := credits.QuoteCapabilities(s.db, c.GetInt64("userID"), req.TaskID, calls)
 	if err != nil {
 		ai.BillingError(c, err)
 		return
@@ -55,7 +75,11 @@ func (s *Server) billingQuote(c *gin.Context) {
 		ai.BillingError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"quoteId": quote.ID, "taskId": quote.TaskID, "policyVersion": credits.PolicyV2, "prices": quote.Prices, "estimated": req.MatchCalls*quote.Prices["match_columns"].Credits + req.GenerateCalls*quote.Prices["generate_field"].Credits,
+	var estimated int64
+	for capability, count := range calls {
+		estimated += quote.Prices[capability].Credits * count
+	}
+	c.JSON(200, gin.H{"quoteId": quote.ID, "taskId": quote.TaskID, "policyVersion": credits.PolicyV2, "prices": quote.Prices, "estimated": estimated,
 		"suggestedMaxTotal": quote.Amount, "expiresAt": quote.ExpiresAt, "available": available, "totals": totals})
 }
 

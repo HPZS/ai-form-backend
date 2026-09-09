@@ -217,3 +217,26 @@ func TestExpireSubscriptions(t *testing.T) {
 		t.Fatalf("重复执行不应再有变更,实际 %d", n)
 	}
 }
+
+func TestSeedPreservesDynamicPricingAndEnablesAll(t *testing.T) {
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Model(&model.CapabilityPrice{}).Where("capability = ?", "generate_rule").Updates(map[string]any{"billing_mode": "per_call", "credits": 7, "price_version": 4, "enabled": false}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	var p model.CapabilityPrice
+	if err = db.Where("capability = ?", "generate_rule").First(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !p.Enabled || p.BillingMode != "per_call" || p.Credits != 7 || p.PriceVersion != 4 {
+		t.Fatalf("重启覆盖了后台配置: %+v", p)
+	}
+}

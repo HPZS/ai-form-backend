@@ -16,7 +16,7 @@ import (
 	"github.com/HPZS/ai-form-backend/internal/model"
 )
 
-// SeedDefaults 首次启动播种默认套餐与能力单价(已有数据则不动)。
+// SeedDefaults 补齐默认配置，保留运营价格与计费模式；能力统一启用。
 func SeedDefaults(db *gorm.DB) error {
 	var planCount int64
 	if err := db.Model(&model.SubscriptionPlan{}).Count(&planCount).Error; err != nil {
@@ -59,15 +59,16 @@ func SeedDefaults(db *gorm.DB) error {
 	// 用户看到的是"AI 服务暂时不可用",根本联想不到是漏了一行配置。
 	// 逐条 FirstOrCreate 对新库老库都幂等,管理员改过的单价也不会被覆盖。
 	//
-	// 计费事件只有两个(方案文档 §5):方案费挂在初次 match_columns(50 分,服务端派生计费组防重),
-	// AI 生成 1 分/格;其余能力 0 分,由底座月费覆盖。模型一律走全局默认
-	// (温度/maxTokens 由代码按能力定死,不是配置项)。
+	// 默认仍为匹配 50 分、生成内容 1 分，其余订阅包含；运营可调整每项模式和单价。
 	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
 	for _, m := range ai.CapabilityMetas() {
 		row := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true, BillingMode: credits.DefaultMode(m.Key), PriceVersion: 1}
 		res := db.Where(model.CapabilityPrice{Capability: m.Key}).FirstOrCreate(&row)
 		if res.Error != nil {
 			return fmt.Errorf("播种能力 %s 单价失败: %w", m.Key, res.Error)
+		}
+		if err := db.Model(&model.CapabilityPrice{}).Where("capability = ? AND enabled = ?", m.Key, false).Update("enabled", true).Error; err != nil {
+			return fmt.Errorf("统一启用能力 %s: %w", m.Key, err)
 		}
 		if res.RowsAffected > 0 {
 			log.Printf("[SEED] 新增能力单价 capability=%s credits=%d", m.Key, row.Credits)

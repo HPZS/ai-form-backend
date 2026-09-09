@@ -34,9 +34,6 @@ func DefaultMode(capability string) string {
 }
 
 func ValidPrice(p model.CapabilityPrice) bool {
-	if p.Capability != "" && p.BillingMode != DefaultMode(p.Capability) {
-		return false
-	}
 	return p.PriceVersion > 0 && ((p.BillingMode == ModeIncluded && p.Credits == 0) || (p.BillingMode == ModePerCall && p.Credits > 0 && p.Credits <= 1_000_000))
 }
 
@@ -44,17 +41,17 @@ type Price = model.BillingPrice
 
 func Prices(db *gorm.DB) (map[string]Price, error) {
 	var rows []model.CapabilityPrice
-	if err := db.Where("capability IN ?", []string{"match_columns", "generate_field"}).Find(&rows).Error; err != nil {
+	if err := db.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := map[string]Price{}
 	for _, p := range rows {
-		if !ValidPrice(p) || p.BillingMode != ModePerCall {
+		if !ValidPrice(p) {
 			return nil, fmt.Errorf("%w: %s", ErrConfig, p.Capability)
 		}
 		out[p.Capability] = Price{p.Credits, p.PriceVersion}
 	}
-	if len(out) != 2 {
+	if len(out) == 0 {
 		return nil, ErrConfig
 	}
 	return out, nil

@@ -150,7 +150,7 @@ func TestBudgetFailureReleasesAndVersionRejects(t *testing.T) {
 	}
 }
 
-func TestDisabledGenerationDoesNotDisableMatching(t *testing.T) {
+func TestLegacyDisabledMarkerDoesNotBlockCapabilities(t *testing.T) {
 	db, uid, task, _ := budgetFixture(t, 100)
 	if err := db.Model(&model.CapabilityPrice{}).Where("capability = ?", "generate_field").Update("enabled", false).Error; err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestDisabledGenerationDoesNotDisableMatching(t *testing.T) {
 	if _, err := Quote(db, uid, task, 1, 0); err != nil {
 		t.Fatalf("停用生成不应阻断匹配报价: %v", err)
 	}
-	if _, err := Quote(db, uid, task, 0, 1); err == nil {
-		t.Fatal("停用能力必须在报价时拒绝")
+	if _, err := Quote(db, uid, task, 0, 1); err != nil {
+		t.Fatal("所有能力始终启用，历史停用标记不应阻断报价", err)
 	}
 }

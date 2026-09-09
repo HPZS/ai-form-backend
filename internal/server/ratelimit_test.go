@@ -58,6 +58,9 @@ func TestAiRateLimitPerMinute(t *testing.T) {
 	}
 	u := model.User{Email: "t@example.com"}
 	db.Create(&u)
+	if err := db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{db: db, limiter: ratelimit.New()}
 
 	r := gin.New()
@@ -105,6 +108,9 @@ func TestAiTrialDailyLimit(t *testing.T) {
 	}
 	u := model.User{Email: "trial@example.com"}
 	db.Create(&u)
+	if err := db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{db: db, limiter: ratelimit.New()}
 	// 直接把试用日窗口吃满(走中间件要 1000 次请求,且会先撞每分钟 60 的闸门)
 	for i := 0; i < aiTrialPerDay; i++ {
@@ -135,6 +141,9 @@ func TestAiTrialLimitSkippedWithBase(t *testing.T) {
 		UserID: u.ID, PlanID: 1, PlanType: model.PlanTypeBase, AmountTotal: 500,
 		StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Status: model.SubStatusActive,
 	})
+	if err := db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{db: db, limiter: ratelimit.New()}
 	for i := 0; i < aiTrialPerDay; i++ {
 		s.limiter.Allow("ai-day-trial:"+u.Email, aiTrialPerDay, 24*time.Hour)
@@ -154,6 +163,9 @@ func TestAiRateLimitDeniedDoesNotConsumeOthers(t *testing.T) {
 	}
 	u := model.User{Email: "trial2@example.com"}
 	db.Create(&u)
+	if err := db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{db: db, limiter: ratelimit.New()}
 	for i := 0; i < aiTrialPerDay; i++ {
 		s.limiter.Allow("ai-day-trial:"+u.Email, aiTrialPerDay, 24*time.Hour)
@@ -248,6 +260,9 @@ func TestV2PaidIncludedSkipsDailyAndReplaySkipsMinute(t *testing.T) {
 	u := model.User{Email: "included@example.test"}
 	db.Create(&u)
 	giveBucket(t, db, u.ID, 0)
+	if err := db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{db: db, limiter: ratelimit.New()}
 	for i := 0; i < aiPerUserPerDay; i++ {
 		s.limiter.Allow("ai-day:"+u.Email, aiPerUserPerDay, 24*time.Hour)
@@ -275,5 +290,39 @@ func TestV2PaidIncludedSkipsDailyAndReplaySkipsMinute(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
 	if w.Code != 429 {
 		t.Fatal("新调用仍保留分钟限流")
+	}
+}
+
+func TestDailyLimitReadsCurrentCapabilityMode(t *testing.T) {
+	db, e := model.OpenMemory()
+	if e != nil {
+		t.Fatal(e)
+	}
+	u := model.User{Email: "dynamic-limit@example.test"}
+	if e = db.Create(&u).Error; e != nil {
+		t.Fatal(e)
+	}
+	giveBucket(t, db, u.ID, 100)
+	if e = db.Create(&model.CapabilityPrice{Capability: "assess_page", BillingMode: "included", PriceVersion: 1, Enabled: true}).Error; e != nil {
+		t.Fatal(e)
+	}
+	s := &Server{db: db, limiter: ratelimit.New()}
+	for i := 0; i < aiPerUserPerDay; i++ {
+		s.limiter.Allow("ai-day:"+u.Email, aiPerUserPerDay, 24*time.Hour)
+	}
+	r := aiRouter(t, s, u)
+	for _, item := range []struct {
+		mode   string
+		price  int64
+		status int
+	}{{"included", 0, 204}, {"per_call", 3, 429}, {"included", 0, 204}} {
+		if e = db.Model(&model.CapabilityPrice{}).Where("capability = ?", "assess_page").Updates(map[string]any{"billing_mode": item.mode, "credits": item.price}).Error; e != nil {
+			t.Fatal(e)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+		if w.Code != item.status {
+			t.Fatalf("配置 %s 应返回 %d: %s", item.mode, item.status, w.Body.String())
+		}
 	}
 }

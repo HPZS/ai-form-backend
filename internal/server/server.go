@@ -65,7 +65,7 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev14: 新增 agent_task_step，支持任务工具循环与必要的人工交接。
 // rev15: 字段匹配接收多条真实代表性样本。
 // rev16: 新增独立的资料图像区域识别与复核契约。
-const APIRevision = 17
+const APIRevision = 18
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -294,7 +294,12 @@ func (s *Server) aiRateLimit(capability string) gin.HandlerFunc {
 			{Key: "ai-day:" + key, Limit: aiPerUserPerDay, Window: 24 * time.Hour},
 			{Key: "ai-ip-day:" + c.ClientIP(), Limit: aiPerIPPerDay, Window: 24 * time.Hour},
 		}
-		if hasBase && credits.DefaultMode(capability) == credits.ModeIncluded {
+		var price model.CapabilityPrice
+		if err := s.db.Where("capability = ?", capability).First(&price).Error; err != nil {
+			abortInternalErr(c, "读取能力限流配置", err)
+			return
+		}
+		if hasBase && price.BillingMode == credits.ModeIncluded {
 			rules = rules[:1]
 		}
 		if !hasBase {
@@ -941,26 +946,46 @@ func (s *Server) adminListPrices(c *gin.Context) {
 		out = append(out, gin.H{
 			"capability": p.Capability, "name": m.Name, "desc": m.Desc,
 			"billingMode": p.BillingMode, "priceVersion": p.PriceVersion,
-			"credits": p.Credits, "enabled": p.Enabled, "model": p.Model,
+			"credits": p.Credits, "enabled": true, "model": p.Model,
 		})
 	}
 	c.JSON(200, gin.H{"prices": out})
 }
 
 type priceReq struct {
-	Credits int64  `json:"credits"`
-	Enabled bool   `json:"enabled"`
-	Model   string `json:"model"` // 空 = 用全局默认
+	BillingMode string `json:"billingMode"`
+	Credits     int64  `json:"credits"`
+	Enabled     *bool  `json:"enabled"`
+	Model       string `json:"model"` // 空 = 用全局默认
 }
 
-// adminUpdatePrice 整行保存;改价/改模型只影响之后的请求,在途请求与已建预占按价格快照执行。
+// adminUpdatePrice 整行保存;改价/改模型只影响之后的请求,已受理请求按原价格快照执行，新调用核对当前配置。
 func (s *Server) adminUpdatePrice(c *gin.Context) {
 	var req priceReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST"})
 		return
 	}
-	mode := credits.DefaultMode(c.Param("capability"))
+	if req.Enabled != nil && !*req.Enabled {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "AI 能力始终启用，不支持停用"})
+		return
+	}
+	var existing model.CapabilityPrice
+	if err := s.db.Where("capability = ?", c.Param("capability")).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(404, gin.H{"error": "CAPABILITY_NOT_FOUND"})
+		} else {
+			internalErr(c, "读取能力配置", err)
+		}
+		return
+	}
+	mode := req.BillingMode
+	if mode == "" {
+		mode = existing.BillingMode
+	}
+	if mode == "" {
+		mode = credits.DefaultMode(existing.Capability)
+	}
 	if !credits.ValidPrice(model.CapabilityPrice{BillingMode: mode, Credits: req.Credits, PriceVersion: 1}) {
 		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": "订阅包含能力必须为 0，按次能力必须为正整数且不超过 1000000"})
 		return
@@ -968,7 +993,7 @@ func (s *Server) adminUpdatePrice(c *gin.Context) {
 	r := s.db.Model(&model.CapabilityPrice{}).
 		Where("capability = ?", c.Param("capability")).
 		Updates(map[string]any{
-			"credits": req.Credits, "enabled": req.Enabled, "model": strings.TrimSpace(req.Model),
+			"credits": req.Credits, "enabled": true, "model": strings.TrimSpace(req.Model),
 			"billing_mode": mode, "price_version": gorm.Expr("price_version + 1"),
 		})
 	if r.Error != nil {

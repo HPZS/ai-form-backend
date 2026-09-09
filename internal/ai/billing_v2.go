@@ -126,9 +126,6 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 		if !credits.ValidPrice(p) {
 			return credits.ErrConfig
 		}
-		if !p.Enabled {
-			return errCapabilityDisabled
-		}
 		if p.BillingMode == credits.ModePerCall && g.billingPaused {
 			return errBillingPaused
 		}
@@ -161,7 +158,7 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 		return
 	}
 	if errors.Is(err, errClientUpgrade) {
-		apiErr(c, 426, "BILLING_CLIENT_UPGRADE_REQUIRED", "计费规则已更新，请升级插件并确认按次费用后继续")
+		apiErr(c, 426, "BILLING_CLIENT_UPGRADE_REQUIRED", "计费规则已更新，请升级插件后继续")
 		return
 	}
 	if errors.Is(err, errCapabilityDisabled) {
