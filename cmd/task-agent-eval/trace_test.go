@@ -14,9 +14,9 @@ func TestTracePreservesFailedAndSuccessfulAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	trace.Capability = "compile_adapter"
-	trace.Secret = "synthetic-upstream-key"
+	trace.Secret = "synthetic-\"upstream\\key"
 	trace.Payload = json.RawMessage(`{"goal":"本地夹具"}`)
-	trace.Attempts = append(trace.Attempts, map[string]any{"rawResponse": "首轮原始非法候选 synthetic-upstream-key", "validationError": "缺少绑定"}, map[string]any{"rawResponse": "第二轮原始候选", "validated": true})
+	trace.Attempts = append(trace.Attempts, map[string]any{"rawResponse": "首轮原始非法候选 " + trace.Secret, "validationError": "缺少绑定"}, map[string]any{"rawResponse": "第二轮原始候选", "validated": true})
 	trace.finish(&err)
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +25,11 @@ func TestTracePreservesFailedAndSuccessfulAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), trace.Secret) {
+	var decoded evalTrace
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(decoded.Attempts[0]["rawResponse"].(string), trace.Secret) {
 		t.Fatal("上游回显的密钥不得落入证据")
 	}
 	for _, want := range []string{"首轮原始非法候选", "缺少绑定", "第二轮原始候选"} {

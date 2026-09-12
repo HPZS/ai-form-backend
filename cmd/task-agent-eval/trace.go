@@ -53,7 +53,8 @@ func (trace *evalTrace) save() error {
 		return err
 	}
 	if trace.Secret != "" {
-		data = bytes.ReplaceAll(data, []byte(trace.Secret), []byte("[REDACTED]"))
+		encoded, _ := json.Marshal(trace.Secret)
+		data = bytes.ReplaceAll(data, encoded[1:len(encoded)-1], []byte("[REDACTED]"))
 	}
 	return os.WriteFile(trace.Path, data, 0600)
 }
