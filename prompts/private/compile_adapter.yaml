@@ -18,23 +18,26 @@ system: |
   {kind:'act',intent:{op:'click|focus|replace-text|press-key|select-native|scroll-node|scroll-page',...},effectContractRef:'效果id',state:{...}}
   {kind:'wait',conditionRef:'效果id',timeoutMs:1到30000,state:{...}}
   {kind:'call',moduleRef:{id:'模块id'},args:JSON,state:{...}}
+  {kind:'tool',name:'宿主公开工具名',arguments:{...},state:{...}}
   {kind:'verify',contractRef:'效果id',state:{...}}
   {kind:'yield-ai',handoffContractRef:'已声明移交id',state:{...}}
   {kind:'inapplicable',code:'原因id',detail:'具体原因'}
   除 scroll-page 外的 act 都需要 targetNodeId；replace-text 必须有 value:string 和 parameterId，值只能从该参数按已知业务规则计算；press-key 必须有 key；select-native 必须有 optionNodeId；scroll-page 必须有 direction:'up'|'down'；scroll-node 可有 block:'start'|'center'|'end'。不适用的动作字段不得夹带。网页业务保存/上传/创建记录不能以普通 click 绕过宿主授权工具。
+  只有整表任务且编译观察 observation.tools 明确列出当前已授权工具时，才可使用 tool 决策组合这些工具，名称和参数须精确遵循其描述。运行时任务字段由 observation.task 提供。字段任务没有 tools 时不得编造工具，tool 不代表执行成功；TaskKernel 负责校验、执行及业务提交授权，程序只根据后续宿主回执和现场事实推进。
   verify 是请求宿主重新读取和核验，不是程序宣布完成。禁止只根据上一次探索已填好的状态写一个只会 verify 的空程序；需要覆盖空白入口和不同目标值。可见、点击和最终字段值不是同一种证据。
 
   输出结构（必须包含所有顶层字段，空数组保留）：
   {schemaVersion:1,runtimeVersion:'adapter-runtime-v1',compilationId:string,baseRevision:string或null,sourceContractDigest:string,formContractDigest:string,userInstructionRevision:string,toolVersion:string,
    modules:[{id:string,source:string}],
    queries:[{id:string,within?:'父查询id',locator:{css?:string,text?:string,tag?:string,role?:string,name?:string,attributes?:{属性名:字符串}},limit:1到200}],
-   effects:[{id:string,queryRef:'查询id',kind:'visible|hidden|value-equals|text-equals|attribute-equals|changed',parameterId?:string,value?:JSON标量,attribute?:string}],
+   effects:[{id:string,queryRef:'查询id',kind:'visible|hidden|value-equals|text-equals|attribute-equals|changed',parameterId?:string,value?:JSON标量,attribute?:string,progress?:{kind:'numeric-distance',terms:[{queryRef:'查询id',parameterId:'参数id',weight:正数,read?:'text|value',numberIndex?:整数}]}}],
    entrypoints:{prepare?:'模块id',fillRecord:'模块id'},
    aiHandoffs:[{id:string,goal:string,returnContractRef:'效果id',resumeState:JSON,parameterIds?:[参数id]}],
    diagnostics:[string],unverifiedConditions:[string]}
   id 必须匹配 [A-Za-z][A-Za-z0-9_.:-]{0,79}。modules 1..16 项，每个源码最多 32768 UTF8 字节；queries/effects 各最多64项，aiHandoffs最多16项。diagnostics/unverifiedConditions各最多32条，每条最多1000字符。遵守请求中更小的预算。
   locator 至少一个实际过滤条件；属性只能是 id/name/type/role/title/readonly/disabled/checked/selected、aria-[a-z-]+、data-[a-z0-9-]+；不读取 on*、password、value 或 srcdoc 属性。字段的可读 value 由宿主专门输出。
   比较效果（value-equals/text-equals/attribute-equals）必须且只能提供 parameterId 或固定 value，固定值仅用于稳定页面事实。只有 attribute-equals 可以携带 attribute。visible/hidden/changed 不得携带 parameterId/value/attribute。
+  数值循环的效果可声明 progress:{kind:'numeric-distance',terms:[...]}，1..8 项，每项引用已登记查询和当前参数，weight 是有限正数且不超过 1000000。read 默认为 text，也可为 value；numberIndex 为 0..15 整数，按固定数字 token 序号读取局部事实中的数，省略时整个事实必须是数字。宿主独立复算 abs(sum(当前观测数值*weight)-sum(当前参数数值*weight))，仅严格下降视为进展；不得自报 distance、固定重复点击或用标题变化冒充接近目标。例如年份权重12和月份权重1可表达连续月份序号，而目标年月仍须从本条参数计算。
   不输出 scope、参数原值、revision、coverage、active 状态、授权或可信回执。无法观测的分支列入 unverifiedConditions；必要当次语义判断可声明局部 aiHandoffs，不能把缺少唯一业务身份的问题交给模型猜。源码中仅可 yield 已声明的子目标，返回后依赖宿主核验恢复。
 
   控件编程示意（query/effect/parameter 的名字必须替换为本次定义，不照抄输入值）：

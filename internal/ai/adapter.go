@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -173,12 +174,24 @@ type AdapterQuery struct {
 	Limit   int            `json:"limit"`
 }
 type AdapterEffect struct {
-	ID          string          `json:"id"`
-	QueryRef    string          `json:"queryRef"`
-	Kind        string          `json:"kind"`
-	ParameterID string          `json:"parameterId,omitempty"`
-	Attribute   string          `json:"attribute,omitempty"`
-	Value       json.RawMessage `json:"value,omitempty"`
+	ID          string           `json:"id"`
+	QueryRef    string           `json:"queryRef"`
+	Kind        string           `json:"kind"`
+	ParameterID string           `json:"parameterId,omitempty"`
+	Attribute   string           `json:"attribute,omitempty"`
+	Value       json.RawMessage  `json:"value,omitempty"`
+	Progress    *AdapterProgress `json:"progress,omitempty"`
+}
+type AdapterProgress struct {
+	Kind  string                `json:"kind"`
+	Terms []AdapterProgressTerm `json:"terms"`
+}
+type AdapterProgressTerm struct {
+	QueryRef    string  `json:"queryRef"`
+	ParameterID string  `json:"parameterId"`
+	Weight      float64 `json:"weight"`
+	Read        string  `json:"read,omitempty"`
+	NumberIndex *int    `json:"numberIndex,omitempty"`
 }
 type AdapterEntrypoints struct {
 	Prepare    string `json:"prepare,omitempty"`
@@ -314,6 +327,19 @@ func validateCompileAdapterOutput(r *CompileAdapterReq, content string) (Compile
 		}
 		if e.Kind == "attribute-equals" && !allowedAdapterAttribute(e.Attribute) {
 			return out, fmt.Errorf("效果读取属性未获允许")
+		}
+		if e.Progress != nil {
+			if e.Progress.Kind != "numeric-distance" || len(e.Progress.Terms) < 1 || len(e.Progress.Terms) > 8 {
+				return out, fmt.Errorf("数值进展声明必须含 1..8 项 numeric-distance")
+			}
+			for _, term := range e.Progress.Terms {
+				if queries[term.QueryRef].ID == "" || !params[term.ParameterID] || math.IsNaN(term.Weight) || math.IsInf(term.Weight, 0) || term.Weight <= 0 || term.Weight > 1000000 {
+					return out, fmt.Errorf("数值进展引用或权重非法")
+				}
+				if term.Read != "" && term.Read != "text" && term.Read != "value" || term.NumberIndex != nil && (*term.NumberIndex < 0 || *term.NumberIndex > 15) {
+					return out, fmt.Errorf("数值进展读取方式或数字索引非法")
+				}
+			}
 		}
 	}
 	handoffs := map[string]bool{}

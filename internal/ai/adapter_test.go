@@ -144,3 +144,39 @@ func TestCompileAdapterRequestRejectsMissingBindingAndUnboundedInput(t *testing.
 		t.Fatal("修复上下文源码超限不应通过")
 	}
 }
+
+func TestCompileAdapterNumericProgress(t *testing.T) {
+	req := adapterRequest()
+	check := func(mutate func(map[string]any)) error {
+		out := adapterOutput(req)
+		term := map[string]any{"queryRef": "field", "parameterId": "target", "weight": 12, "read": "text", "numberIndex": 0}
+		mutate(term)
+		out["effects"].([]any)[0].(map[string]any)["progress"] = map[string]any{"kind": "numeric-distance", "terms": []any{term}}
+		data, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = validateCompileAdapterOutput(req, string(data))
+		return err
+	}
+	if err := check(func(map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"未知查询":   func(term map[string]any) { term["queryRef"] = "missing" },
+		"未知参数":   func(term map[string]any) { term["parameterId"] = "missing" },
+		"零权重":    func(term map[string]any) { term["weight"] = 0 },
+		"权重超限":   func(term map[string]any) { term["weight"] = 1000001 },
+		"非法读取":   func(term map[string]any) { term["read"] = "attribute" },
+		"负数字索引":  func(term map[string]any) { term["numberIndex"] = -1 },
+		"数字索引超限": func(term map[string]any) { term["numberIndex"] = 16 },
+		"非整数索引":  func(term map[string]any) { term["numberIndex"] = 0.5 },
+		"自报进展":   func(term map[string]any) { term["distance"] = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if check(mutate) == nil {
+				t.Fatal("接受非法进展声明")
+			}
+		})
+	}
+}
