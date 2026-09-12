@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 // 评测证据仅含正式协议和模型内容，不记录请求认证头、环境变量或密钥。
 type evalTrace struct {
+	Secret        string           `json:"-"`
 	Path          string           `json:"-"`
 	Capability    string           `json:"capability"`
 	Payload       json.RawMessage  `json:"payload"`
@@ -49,6 +51,9 @@ func (trace *evalTrace) save() error {
 	data, err := json.MarshalIndent(trace, "", "  ")
 	if err != nil {
 		return err
+	}
+	if trace.Secret != "" {
+		data = bytes.ReplaceAll(data, []byte(trace.Secret), []byte("[REDACTED]"))
 	}
 	return os.WriteFile(trace.Path, data, 0600)
 }

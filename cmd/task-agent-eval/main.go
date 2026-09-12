@@ -70,6 +70,7 @@ func run() (runErr error) {
 	key, model := os.Getenv("AIFORM_UPSTREAM_KEY"), os.Getenv("AIFORM_EVAL_MODEL")
 	if trace != nil {
 		trace.Model, trace.PromptVersion = model, version
+		trace.Secret = key
 	}
 	if !strings.HasPrefix(endpoint, "https://") || key == "" || model == "" {
 		return fmt.Errorf("需要 HTTPS 上游地址、评测密钥和模型配置")
