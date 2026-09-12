@@ -1,6 +1,6 @@
 # 适配程序接口与发布（API21）
 
-本次基于 `54ced2c` / API20 增加受限适配程序编译，不替换现有计费 v2。本文是代码契约和发布检查，尚不代表生产或浏览器真实适配验收通过。
+本次基于 `54ced2c` / API20 增加受限适配程序编译，不替换现有计费 v2。API21 已按用户后续授权上线，发布核验见文末；浏览器真实适配全流程和用户现场验收仍待完成。
 
 - `POST /v1/ai/compile-adapter`：`mode=create|repair`。请求结构见 `internal/ai/adapter.go`，正式提示词 `prompts/private/compile_adapter.yaml` v3。每次生成绑定 compilationId、baseRevision（无基线为 null）、sourceContractDigest、formContractDigest、userInstructionRevision、runtimeVersion、toolVersion；响应必须原样回显。v3 明确工具的 satisfied/changed/failed/unknown/ready 及移交状态，防止把只读 ready 当作失败或业务完成。
 - `schemaVersion=1`、`runtimeVersion=adapter-runtime-v1`。请求传当前目标、局部 scope/sourceContract/observation、参数定义、相关旧模块、失败上下文及全部 11 项执行预算。响应只含候选 modules/queries/effects/entrypoints/aiHandoffs、诊断及待验证条件；禁止 coverage、active 状态和成功回执。浏览器侧受限 AST、单次决策、实际回读与条件发布才决定候选是否能使用。
@@ -31,3 +31,9 @@
 真实浏览器运行发现旧评测 CLI 每次尝试 90 秒与生产整链 80 秒不一致；现已共享 `ai.CallChainTimeout`，协议修复不重置截止。此前 CLI 结果只作为探索证据，不能据此宣称线上时限内通过。生产截止和计费租约不变。
 
 最新代码 `a045e6d` 已通过全量 Go 测试和构建；开发机镜像 `hupeng666/form-backend:a045e6d` 构建完成，镜像索引 ID 为 `sha256:e069ece0488ae555624fb9797cf900a3f9d6b5c4e855ddbc2482ca7cd52fcad2`，尚未推送。配套插件 b395564 / 编译提示词 v3 的动态候选与 Ant Design Vue 真实验收均在编译请求遇到 502 或 EOF，保存次数为 0，完整记录见插件 `docs/适配程序真实浏览器验收.md`。本次未部署，生产只读复核仍为 API20/计费2、app running、PostgreSQL healthy；需真实全流程验收通过后再发布。
+
+### 后续用户授权发布结果
+
+2026-09-12 用户明确要求“push + 部署，我去验证”，覆盖前述发布时序条件。两仓 main 已 push，提交标签 a045e6d 和 latest 已推送 Docker Hub，服务器只拉取同一 digest；当前已部署 API21，运行配置镜像 ID `sha256:bc37b6e08636542e4b0263467f5443073e35f577e08f92eed3765c6200e4bd30`。公网能力、旧 JWT claims 格式凭证、稳定 userId、原邮箱/角色、仅程序409且零AIRequest均核验通过，证据 `.artifacts/adapter-api21-live-20260912.json`；没有调用上游模型，凭据未落盘。
+
+完整备份 `/opt/ai-form-backend/releases/20260912-api21-a045e6d/` 含数据库dump及目录校验、旧镜像身份、Compose/环境和原提示词。部署前后原182条流水完整摘要、1560条请求身份/价快照摘要和23项原能力配置摘要均相同；新能力 included/0/版本1/全局模型，24份提示词SHA256与开发机一致。新增提示词首次复制为0600导致容器不可读，已改为公开提示词所需0644，重启后正常；当前 app running、重启计数0。此处记录发布成功，真实AI全流程和用户现场验收仍待完成。
