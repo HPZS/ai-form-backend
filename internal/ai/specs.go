@@ -774,6 +774,10 @@ func truncRunes(s string, n int) string {
 // Specs 返回全部能力规格,按注册顺序即路由顺序。
 func Specs() []Spec {
 	return []Spec{
+		{Name: "compile_adapter", NewReq: func() Request { return &CompileAdapterReq{} }, RepairMessage: adapterRepairMessage,
+			Post: func(req Request, content string) (any, error) {
+				return validateCompileAdapterOutput(req.(*CompileAdapterReq), content)
+			}},
 		sourceImageSpec(),
 		{
 			Name:   "compile_input",
@@ -903,8 +907,9 @@ func Specs() []Spec {
 			},
 		},
 		{
-			Name:   "agent_task_step",
-			NewReq: func() Request { return &TaskAgentReq{} },
+			Name:          "agent_task_step",
+			NewReq:        func() Request { return &TaskAgentReq{} },
+			RepairMessage: TaskAgentRepairMessage,
 			Post: func(req Request, content string) (any, error) {
 				return validateTaskAgentOutput(req.(*TaskAgentReq), content)
 			},

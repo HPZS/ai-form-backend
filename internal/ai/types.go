@@ -14,6 +14,10 @@ import (
 
 // Meta 每个请求携带的公共元信息。
 type Meta struct {
+	ModelPolicy            string `json:"modelPolicy,omitempty"`
+	CallPhase              string `json:"callPhase,omitempty"`
+	HandoffID              string `json:"handoffId,omitempty"`
+	CompilationID          string `json:"compilationId,omitempty"`
 	BillingProtocolVersion int    `json:"billingProtocolVersion,omitempty"`
 	AuthorizationVersion   string `json:"authorizationVersion,omitempty"`
 	RequestID              string `json:"requestId"`
@@ -26,6 +30,20 @@ func (m *Meta) GetMeta() *Meta { return m }
 func (m *Meta) validateMeta() error {
 	if _, err := uuid.Parse(m.RequestID); err != nil {
 		return fmt.Errorf("requestId 必须是 uuid")
+	}
+	if m.ModelPolicy != "" && m.ModelPolicy != "adaptive" && m.ModelPolicy != "deterministic-only" {
+		return fmt.Errorf("modelPolicy 非法")
+	}
+	if m.CallPhase != "" && m.CallPhase != "adapter-create" && m.CallPhase != "adapter-repair" && m.CallPhase != "runtime-handoff" {
+		return fmt.Errorf("callPhase 非法")
+	}
+	if (m.CallPhase == "runtime-handoff") != (m.HandoffID != "") {
+		return fmt.Errorf("runtime-handoff 必须绑定 handoffId，其他阶段不得携带")
+	}
+	for name, value := range map[string]string{"handoffId": m.HandoffID, "compilationId": m.CompilationID} {
+		if err := capStr(name, value, 128); err != nil {
+			return err
+		}
 	}
 	return nil
 }

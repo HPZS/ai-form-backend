@@ -158,6 +158,7 @@ const defaultMaxTokens = 2000
 // 每个能力都必须登记(有 TestCapMaxTokensCoverage 把关):漏登记会静默落到默认值,
 // match_columns 就曾因此在宽表单上必然截断 JSON,重试再截断,陷入 422 死循环。
 var capMaxTokens = map[string]int{
+	"compile_adapter":        16000,
 	"read_source_image":      10000,
 	"compile_input":          12000,
 	"audit_input_plan":       2000,

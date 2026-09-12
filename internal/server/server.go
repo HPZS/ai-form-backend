@@ -66,7 +66,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev15: 字段匹配接收多条真实代表性样本。
 // rev16: 新增独立的资料图像区域识别与复核契约。
 // rev20: 完整来源、样本行和列统计统一支持 1024 列。
-const APIRevision = 20
+// rev21: 适配程序编译、模型策略、调用阶段以及稳定用户主体。
+const APIRevision = 21
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -411,7 +412,7 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"user":         gin.H{"email": user.Email, "role": user.Role},
+		"user":         gin.H{"userId": strconv.FormatInt(user.ID, 10), "email": user.Email, "role": user.Role},
 		"accessToken":  pair.AccessToken,
 		"refreshToken": pair.RefreshToken,
 	})
@@ -450,7 +451,7 @@ func (s *Server) loginPassword(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"user":         gin.H{"email": user.Email, "role": user.Role},
+		"user":         gin.H{"userId": strconv.FormatInt(user.ID, 10), "email": user.Email, "role": user.Role},
 		"accessToken":  pair.AccessToken,
 		"refreshToken": pair.RefreshToken,
 	})
@@ -516,7 +517,7 @@ func (s *Server) ssoExchange(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"user":         gin.H{"email": user.Email, "role": user.Role},
+		"user":         gin.H{"userId": strconv.FormatInt(user.ID, 10), "email": user.Email, "role": user.Role},
 		"accessToken":  pair.AccessToken,
 		"refreshToken": pair.RefreshToken,
 	})
@@ -575,6 +576,7 @@ func (s *Server) me(c *gin.Context) {
 		})
 	}
 	c.JSON(200, gin.H{
+		"userId":    strconv.FormatInt(c.GetInt64("userID"), 10),
 		"email":     c.GetString("email"),
 		"role":      c.GetString("role"),
 		"available": avail,
@@ -1266,6 +1268,8 @@ func (s *Server) about(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"name":                       "ai-form-backend",
 		"apiRevision":                APIRevision,
+		"adapterProtocolVersion":     1,
+		"adapterRuntimeVersions":     []string{"adapter-runtime-v1"},
 		"interactionProtocolVersion": 1,
 		"billingProtocolVersion":     2,
 		"billingPolicyVersion":       credits.PolicyV2,

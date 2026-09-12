@@ -163,6 +163,9 @@ func (s *Server) billingRequests(c *gin.Context) {
 		RequestID     string    `json:"requestId"`
 		TaskID        string    `json:"taskId"`
 		Capability    string    `json:"capability"`
+		CallPhase     string    `json:"callPhase,omitempty"`
+		HandoffID     string    `json:"handoffId,omitempty"`
+		CompilationID string    `json:"compilationId,omitempty"`
 		Status        string    `json:"status"`
 		Credits       int64     `json:"charged"`
 		Refunded      int64     `json:"refunded"`
@@ -171,7 +174,7 @@ func (s *Server) billingRequests(c *gin.Context) {
 		PolicyVersion string    `json:"policyVersion"`
 		CreatedAt     time.Time `json:"createdAt"`
 	}
-	if err := q.Select("request_id,task_id,capability,status,credits,billing_mode,billing_reason,policy_version,created_at").Order("id desc").Offset((page - 1) * 20).Limit(20).Scan(&rows).Error; err != nil {
+	if err := q.Select("request_id,task_id,capability,call_phase,handoff_id,compilation_id,status,credits,billing_mode,billing_reason,policy_version,created_at").Order("id desc").Offset((page - 1) * 20).Limit(20).Scan(&rows).Error; err != nil {
 		ai.BillingError(c, err)
 		return
 	}

@@ -60,7 +60,7 @@ func SeedDefaults(db *gorm.DB) error {
 	// 逐条 FirstOrCreate 对新库老库都幂等,管理员改过的单价也不会被覆盖。
 	//
 	// 默认仍为匹配 50 分、生成内容 1 分，其余订阅包含；运营可调整每项模式和单价。
-	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1}
+	creditsByCap := map[string]int64{"match_columns": 50, "generate_field": 1, "compile_adapter": 0}
 	for _, m := range ai.CapabilityMetas() {
 		row := model.CapabilityPrice{Capability: m.Key, Credits: creditsByCap[m.Key], Enabled: true, BillingMode: credits.DefaultMode(m.Key), PriceVersion: 1}
 		res := db.Where(model.CapabilityPrice{Capability: m.Key}).FirstOrCreate(&row)

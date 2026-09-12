@@ -43,6 +43,9 @@ func run() error {
 	if err := req.Validate(); err != nil {
 		return err
 	}
+	if req.GetMeta().ModelPolicy == "deterministic-only" {
+		return fmt.Errorf("ai-required: 当前策略不允许请求模型")
+	}
 	dir := os.Getenv("PROMPTS_DIR")
 	if dir == "" {
 		dir = "prompts/private"
@@ -123,7 +126,7 @@ func run() error {
 		if attempt == 1 {
 			return fmt.Errorf("两次模型输出均未通过生产协议校验: %w", err)
 		}
-		messages = append(messages, ai.ChatMessage{Role: "user", Content: ai.TaskAgentRepairMessage(req, err)})
+		messages = append(messages, ai.ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -134,6 +137,8 @@ func run() error {
 		return err
 	}
 	output["meta"] = map[string]any{"capability": spec.Name, "promptVersion": version, "schemaVersion": "v1", "model": model, "latencyMs": time.Since(started).Milliseconds(), "evaluation": true, "attempts": attempts, "promptTokens": promptTokens, "completionTokens": completionTokens, "temperature": temperature, "maxTokens": maxTokens}
+	meta := output["meta"].(map[string]any)
+	meta["callPhase"], meta["handoffId"], meta["compilationId"], meta["modelCalls"] = req.GetMeta().CallPhase, req.GetMeta().HandoffID, req.GetMeta().CompilationID, attempts
 	return json.NewEncoder(os.Stdout).Encode(output)
 }
 

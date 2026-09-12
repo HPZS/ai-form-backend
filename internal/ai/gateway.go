@@ -54,6 +54,8 @@ type Spec struct {
 	Name   string
 	NewReq func() Request
 	Post   func(req Request, content string) (any, error)
+	// RepairMessage 在统一技术重试中重申当前协议，不新增业务调用或授权。
+	RepairMessage func(req Request, validation error) string
 	// Messages 可选：视觉等能力在模板文字之外附加结构化多模态内容。
 	Messages func(req Request, system, user string) ([]ChatMessage, error)
 	// BillingGroup 可选:服务端从请求内容派生计费组(方案费/AI格防重的关键,不依赖客户端诚实)。
@@ -64,6 +66,13 @@ type Spec struct {
 	// PriceAfter 可选:拿到解析后的结果再定价(如 match_columns 一列都没匹配上时免单——
 	// "成功建立方案才收费",全空方案对用户没有价值,不收钱也不占用计费组)。
 	PriceAfter func(req Request, result any, price int64) int64
+}
+
+func (s Spec) ProtocolRepairMessage(req Request, validation error) string {
+	if s.RepairMessage != nil {
+		return s.RepairMessage(req, validation)
+	}
+	return "上次输出未通过协议校验：" + safeValidationReason(validation) + "。请保持原请求绑定和输出契约，重新返回完整 JSON，不新增权限或可信结果。"
 }
 
 type Gateway struct {
@@ -107,6 +116,11 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 		}
 		if err := req.Validate(); err != nil {
 			apiErr(c, 400, "BAD_REQUEST", err.Error())
+			return
+		}
+		if req.GetMeta().ModelPolicy == "deterministic-only" {
+			log.Printf("[AI-POLICY-BLOCKED] request_id=%s capability=%s phase=%s", req.GetMeta().RequestID, spec.Name, req.GetMeta().CallPhase)
+			apiErr(c, 409, "ai-required", "当前任务仅运行本地程序，需要 AI 的步骤已停止")
 			return
 		}
 		if g.billingV2 {
@@ -279,9 +293,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			outputLen, outputHash := invalidOutputFingerprint(call.Content)
 			log.Printf("[AI-INVALID] request_id=%s capability=%s attempt=%d validation=%s output_len=%d output_sha256=%s",
 				meta.RequestID, spec.Name, attempt+1, safeValidationReason(err), outputLen, outputHash)
-			if spec.Name == "agent_task_step" {
-				messages = append(messages, ChatMessage{Role: "user", Content: TaskAgentRepairMessage(req, err)})
-			}
+			messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 		}
 		if err != nil {
 			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, usage, promptVer, start)
@@ -437,6 +449,10 @@ func (g *Gateway) groupAlreadyCharged(userID int64, groupID string) (bool, error
 //
 // 只回版本与标识,不回提示词正文(提示词是私有运行时配置)。
 type RespMeta struct {
+	CallPhase     string `json:"callPhase,omitempty"`
+	HandoffID     string `json:"handoffId,omitempty"`
+	CompilationID string `json:"compilationId,omitempty"`
+	ModelCalls    *int   `json:"modelCalls,omitempty"`
 	Capability    string `json:"capability"`
 	PromptVersion string `json:"promptVersion"`
 	SchemaVersion string `json:"schemaVersion"`

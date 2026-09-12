@@ -25,6 +25,38 @@ type legacyCapabilityPrice struct {
 
 func (legacyCapabilityPrice) TableName() string { return "capability_prices" }
 
+func TestAdapterMetadataMigrationPreservesAcceptedRequest(t *testing.T) {
+	db, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := AIRequest{UserID: 1, RequestID: "accepted-before-adapter", Capability: "generate_rule", PolicyVersion: "per-call-v2", RequestDigest: "h1:original", Status: "settlement_pending", ResponseCache: `{"code":"original"}`, UnitPrice: 3, ReservedCredits: 3, LeaseToken: "original-lease"}
+	if err := db.Create(&r).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 只操作本测试独有的内存库，模拟 API20 尚未有适配关联列的结构。
+	for _, column := range []string{"call_phase", "handoff_id", "compilation_id"} {
+		if err := db.Migrator().DropColumn(&AIRequest{}, column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := Migrate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var actual AIRequest
+	if err := db.First(&actual, r.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if actual.RequestDigest != r.RequestDigest || actual.Status != r.Status || actual.ResponseCache != r.ResponseCache || actual.ReservedCredits != 3 || actual.UnitPrice != 3 || actual.LeaseToken != r.LeaseToken {
+		t.Fatalf("适配关联列迁移改写了在途账务: %+v", actual)
+	}
+	if actual.CallPhase != "" || actual.HandoffID != "" || actual.CompilationID != "" {
+		t.Fatal("旧请求不得伪造适配阶段")
+	}
+}
+
 // 旧结构升级:迁移后旧列删除、播种的占位模型名清空(语义变为"用全局默认"),单价保留。
 func TestMigrateLegacyCapabilitySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")

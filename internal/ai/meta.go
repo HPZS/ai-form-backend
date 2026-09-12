@@ -11,6 +11,7 @@ type CapMeta struct {
 // CapabilityMetas 与 Specs() 同源同序的能力清单;新增能力时两处同时登记。
 func CapabilityMetas() []CapMeta {
 	return []CapMeta{
+		{"compile_adapter", "适配程序开发", "根据当前资料和页面事实生成或修复受限适配程序，结果须经插件独立验证"},
 		{"read_source_image", "资料图片读取", "按图像区域读取用户提供的资料并复核识别候选，与页面截图分开处理"},
 		{"compile_input", "智能数据编译", "理解 JSON、大白话等输入，生成带来源引用的可验证记录计划"},
 		{"audit_input_plan", "数据计划复核", "独立复核数据编译结果的语义、边界与重要遗漏"},

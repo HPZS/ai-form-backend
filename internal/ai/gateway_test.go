@@ -50,7 +50,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server, v2 ...bool) (*gin.Eng
 	db.Create(&model.AIUpstream{Name: "t1", BaseURL: upstream.URL, APIKey: "k", Enabled: true})
 
 	dir := t.TempDir()
-	served := []string{"match_columns", "generate_field", "analyze_form", "detect_identity", "extract_reveal_chain", "generate_rule"}
+	served := []string{"match_columns", "generate_field", "analyze_form", "detect_identity", "extract_reveal_chain", "generate_rule", "compile_adapter"}
 	for _, cap := range served {
 		writePrompt(t, dir, cap)
 	}

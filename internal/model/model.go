@@ -238,6 +238,9 @@ const (
 )
 
 type AIRequest struct {
+	CallPhase            string `gorm:"size:32"`
+	HandoffID            string `gorm:"size:128"`
+	CompilationID        string `gorm:"size:128"`
 	PolicyVersion        string `gorm:"index;size:32"`
 	BillingMode          string `gorm:"size:16"`
 	PriceVersion         int64

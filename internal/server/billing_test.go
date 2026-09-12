@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/HPZS/ai-form-backend/internal/ai"
 	"github.com/HPZS/ai-form-backend/internal/model"
 	"github.com/HPZS/ai-form-backend/internal/subscription"
 	"github.com/google/uuid"
@@ -35,7 +36,7 @@ func TestBillingQuoteAuthorizationAndPermissions(t *testing.T) {
 			included++
 		}
 	}
-	if paid != 2 || included != 21 {
+	if paid != 2 || included != len(ai.CapabilityMetas())-2 {
 		t.Fatalf("分类 paid=%d included=%d", paid, included)
 	}
 	task := uuid.NewString()

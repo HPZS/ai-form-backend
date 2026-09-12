@@ -55,6 +55,35 @@ func TestSeedDefaults(t *testing.T) {
 	}
 }
 
+func TestAdapterDefaultsDoNotCopyExistingRulePrice(t *testing.T) {
+	db, err := model.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.CapabilityPrice{}).Where("capability = ?", "generate_rule").Updates(map[string]any{"billing_mode": "per_call", "credits": 9, "price_version": 4, "model": "configured-rule-model"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(db); err != nil {
+		t.Fatal(err)
+	}
+	var adapter, rule model.CapabilityPrice
+	if err := db.First(&adapter, "capability = ?", "compile_adapter").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&rule, "capability = ?", "generate_rule").Error; err != nil {
+		t.Fatal(err)
+	}
+	if adapter.BillingMode != "included" || adapter.Credits != 0 || adapter.PriceVersion != 1 || adapter.Model != "" {
+		t.Fatalf("新能力应独立采用默认配置: %+v", adapter)
+	}
+	if rule.Credits != 9 || rule.PriceVersion != 4 || rule.Model != "configured-rule-model" {
+		t.Fatalf("已有能力配置被覆盖: %+v", rule)
+	}
+}
+
 // 升级场景:老库已经有单价行,这次发版新增了一个能力——必须给它补一行,
 // 而且**不能覆盖管理员改过的单价**。
 //

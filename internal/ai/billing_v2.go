@@ -140,6 +140,7 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 			return credits.ErrNoActiveSub
 		}
 		r = model.AIRequest{UserID: userID, RequestID: meta.RequestID, TaskID: meta.TaskID, Capability: spec.Name, PolicyVersion: credits.PolicyV2,
+			CallPhase: meta.CallPhase, HandoffID: meta.HandoffID, CompilationID: meta.CompilationID,
 			BillingMode: p.BillingMode, PriceVersion: p.PriceVersion, UnitPrice: p.Credits, AuthorizationVersion: meta.AuthorizationVersion, RequestDigest: digest,
 			Status: model.AIReqPending, LeaseToken: uuid.NewString(), LeaseExpiresAt: time.Now().Add(leaseTTL), ExecutionAttempts: 1, CreatedAt: time.Now()}
 		if p.BillingMode == credits.ModePerCall {
@@ -250,9 +251,7 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 			break
 		}
 		log.Printf("[AI-V2-INVALID] request=%s attempt=%d reason=%s", r.RequestID, attempt+1, safeValidationReason(err))
-		if spec.Name == "agent_task_step" {
-			messages = append(messages, ChatMessage{Role: "user", Content: TaskAgentRepairMessage(req, err)})
-		}
+		messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 	}
 	r.Upstream, r.Model = usage.Upstream, usage.Model
 	r.PromptVersion, r.SchemaVersion, r.LatencyMs = promptVer, "v1", int(time.Since(start).Milliseconds())
@@ -394,6 +393,7 @@ func (g *Gateway) billingView(r *model.AIRequest, replayed bool) (gin.H, error) 
 		status = "failed"
 	}
 	return gin.H{"policyVersion": r.PolicyVersion, "taskId": r.TaskID, "requestId": r.RequestID, "authorizationVersion": r.AuthorizationVersion, "mode": r.BillingMode,
+		"callPhase": r.CallPhase, "handoffId": r.HandoffID, "compilationId": r.CompilationID, "modelCalls": requestModelCalls(r),
 		"status": status, "reason": r.BillingReason, "unitPrice": r.UnitPrice, "priceVersion": r.PriceVersion, "settledCredits": r.Credits, "refundedCredits": refund, "replayed": replayed,
 		"balanceAsOf": time.Now(), "cacheExpiresAt": r.CacheExpiresAt, "reservedCredits": r.ReservedCredits, "inputTokens": r.InputTokens, "outputTokens": r.OutputTokens, "costStatus": "unknown"}, nil
 }
@@ -430,11 +430,26 @@ func (g *Gateway) respondV2(c *gin.Context, r *model.AIRequest, replayed, withBi
 	} else {
 		result["credits"] = gin.H{"charged": r.Credits, "available": available}
 	}
-	result["meta"] = &RespMeta{Capability: r.Capability, PromptVersion: r.PromptVersion, SchemaVersion: r.SchemaVersion, Model: r.Model, Upstream: r.Upstream, RequestID: r.RequestID, LatencyMs: r.LatencyMs}
+	result["meta"] = &RespMeta{Capability: r.Capability, PromptVersion: r.PromptVersion, SchemaVersion: r.SchemaVersion, Model: r.Model, Upstream: r.Upstream, RequestID: r.RequestID, LatencyMs: r.LatencyMs,
+		CallPhase: r.CallPhase, HandoffID: r.HandoffID, CompilationID: r.CompilationID, ModelCalls: requestModelCalls(r)}
 	if withBilling {
 		result["billing"] = billing
 	}
 	c.JSON(200, result)
+}
+
+// 历史请求没有逐次记录时返回未知，不能把缺失统计伪装成零次调用。
+func requestModelCalls(r *model.AIRequest) *int {
+	if r.UsageDetails == "" {
+		return nil
+	}
+	var attempts []AttemptUsage
+	if err := json.Unmarshal([]byte(r.UsageDetails), &attempts); err != nil {
+		log.Printf("[AI-USAGE-READ] request=%s err=%v", r.RequestID, err)
+		return nil
+	}
+	count := len(attempts)
+	return &count
 }
 
 func (g *Gateway) QueryRequest(c *gin.Context) {
