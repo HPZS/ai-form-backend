@@ -29,3 +29,5 @@
 2026-09-12 本机发布预检：`6f7787a` 镜像通过 PostgreSQL 16 专用库增量迁移、API21/1/2 协商、旧格式登录凭证保留邮箱/角色并返回稳定 userId、新能力 included/0/版本1/全局模型及仅程序请求 HTTP409 验证；仅程序请求未建立 AIRequest。证据 `.artifacts/adapter-api21-final-20260912-readiness.json`，本次测试容器及其卷、网络已清理。该镜像未推送、未部署，后续提示词修正仍需新冻结验收。
 
 真实浏览器运行发现旧评测 CLI 每次尝试 90 秒与生产整链 80 秒不一致；现已共享 `ai.CallChainTimeout`，协议修复不重置截止。此前 CLI 结果只作为探索证据，不能据此宣称线上时限内通过。生产截止和计费租约不变。
+
+最新代码 `a045e6d` 已通过全量 Go 测试和构建；开发机镜像 `hupeng666/form-backend:a045e6d` 构建完成，镜像索引 ID 为 `sha256:e069ece0488ae555624fb9797cf900a3f9d6b5c4e855ddbc2482ca7cd52fcad2`，尚未推送。配套插件 b395564 / 编译提示词 v3 的动态候选与 Ant Design Vue 真实验收均在编译请求遇到 502 或 EOF，保存次数为 0，完整记录见插件 `docs/适配程序真实浏览器验收.md`。本次未部署，生产只读复核仍为 API20/计费2、app running、PostgreSQL healthy；需真实全流程验收通过后再发布。
