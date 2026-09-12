@@ -120,3 +120,21 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 		t.Fatal("参数上限必须与宿主64一致")
 	}
 }
+
+func TestSharedAdapterSystemPromptDigest(t *testing.T) {
+	expected, err := os.ReadFile("testdata/compile-adapter-prompt.sha256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadPrompts("../../prompts/private", []string{"compile_adapter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system, _, _, err := store.Render("compile_adapter", adapterRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256([]byte(system))) != strings.TrimSpace(string(expected)) {
+		t.Fatal("正式system已变化，请同步插件adapterPrompt.ts与共享SHA256")
+	}
+}
