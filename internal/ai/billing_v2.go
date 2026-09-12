@@ -202,7 +202,7 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), callChainTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), CallChainTimeout)
 	defer cancel()
 	var attempts []AttemptUsage
 	if r.UsageDetails != "" {

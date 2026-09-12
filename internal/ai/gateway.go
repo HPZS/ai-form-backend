@@ -33,7 +33,7 @@ const (
 	maxBodyBytes = 1 << 20
 	// 整条调用链(含重试与上游切换)的总时限,必须短于租约:
 	// 否则请求还在跑、租约已被别人接管,白白多调一次模型
-	callChainTimeout = 80 * time.Second
+	CallChainTimeout = 80 * time.Second
 )
 
 // errLeaseLost 落账时发现租约已被接管:本次结果作废(事务回滚,未扣费)。
@@ -260,7 +260,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 				return
 			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), callChainTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), CallChainTimeout)
 		defer cancel()
 
 		var result any

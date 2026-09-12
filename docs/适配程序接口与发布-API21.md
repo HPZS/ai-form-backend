@@ -2,7 +2,7 @@
 
 本次基于 `54ced2c` / API20 增加受限适配程序编译，不替换现有计费 v2。本文是代码契约和发布检查，尚不代表生产或浏览器真实适配验收通过。
 
-- `POST /v1/ai/compile-adapter`：`mode=create|repair`。请求结构见 `internal/ai/adapter.go`，正式提示词 `prompts/private/compile_adapter.yaml` v2。每次生成绑定 compilationId、baseRevision（无基线为 null）、sourceContractDigest、formContractDigest、userInstructionRevision、runtimeVersion、toolVersion；响应必须原样回显。
+- `POST /v1/ai/compile-adapter`：`mode=create|repair`。请求结构见 `internal/ai/adapter.go`，正式提示词 `prompts/private/compile_adapter.yaml` v3。每次生成绑定 compilationId、baseRevision（无基线为 null）、sourceContractDigest、formContractDigest、userInstructionRevision、runtimeVersion、toolVersion；响应必须原样回显。v3 明确工具的 satisfied/changed/failed/unknown/ready 及移交状态，防止把只读 ready 当作失败或业务完成。
 - `schemaVersion=1`、`runtimeVersion=adapter-runtime-v1`。请求传当前目标、局部 scope/sourceContract/observation、参数定义、相关旧模块、失败上下文及全部 11 项执行预算。响应只含候选 modules/queries/effects/entrypoints/aiHandoffs、诊断及待验证条件；禁止 coverage、active 状态和成功回执。浏览器侧受限 AST、单次决策、实际回读与条件发布才决定候选是否能使用。
 - `/v1/about` 返回 `apiRevision=21`、`adapterProtocolVersion=1`、`adapterRuntimeVersions=["adapter-runtime-v1"]`。既有计费/交互协议保持 2/1。验证码、密码、SSO 登录的 `user.userId` 与 `/v1/me.userId` 都为稳定十进制字符串，插件还应绑定后端地址以隔离不同服务主体。
 - 所有 AI 请求可携带 `modelPolicy=adaptive|deterministic-only`；仅程序策略在模型和账务准入前返回 HTTP409、`ai-required`。旧客户端省略该字段时继续现有行为。
@@ -25,3 +25,7 @@
 4. 先确认后端可用，再发布依赖 API21 的插件；使用已授权验收记录检查编译、局部修复、仅程序模式拒绝和同 ID 恢复。回退只切回旧镜像及提示词，保留增量列和所有账务事实。
 
 生产部署与真实用户页面验证由统一发布任务记录具体提交、镜像摘要、验收结果及未覆盖边界。
+
+2026-09-12 本机发布预检：`6f7787a` 镜像通过 PostgreSQL 16 专用库增量迁移、API21/1/2 协商、旧格式登录凭证保留邮箱/角色并返回稳定 userId、新能力 included/0/版本1/全局模型及仅程序请求 HTTP409 验证；仅程序请求未建立 AIRequest。证据 `.artifacts/adapter-api21-final-20260912-readiness.json`，本次测试容器及其卷、网络已清理。该镜像未推送、未部署，后续提示词修正仍需新冻结验收。
+
+真实浏览器运行发现旧评测 CLI 每次尝试 90 秒与生产整链 80 秒不一致；现已共享 `ai.CallChainTimeout`，协议修复不重置截止。此前 CLI 结果只作为探索证据，不能据此宣称线上时限内通过。生产截止和计费租约不变。

@@ -86,6 +86,9 @@ func run() (runErr error) {
 	var result any
 	temperature, maxTokens := ai.CapabilityGenerationParams(spec.Name)
 	attempts, promptTokens, completionTokens := 0, 0, 0
+	// 与生产网关共享整条链截止；协议修复不能重新获得完整时间预算。
+	ctx, cancel := context.WithTimeout(context.Background(), ai.CallChainTimeout)
+	defer cancel()
 	for attempt := 0; attempt < 2; attempt++ {
 		attempts++
 		payload, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "temperature": temperature, "max_tokens": maxTokens})
@@ -96,22 +99,18 @@ func run() (runErr error) {
 				return err
 			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/chat/completions", bytes.NewReader(payload))
 		if err != nil {
-			cancel()
 			return err
 		}
 		request.Header.Set("Authorization", "Bearer "+key)
 		request.Header.Set("Content-Type", "application/json")
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			cancel()
 			return fmt.Errorf("模型连接失败: %w", err)
 		}
 		body, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
 		response.Body.Close()
-		cancel()
 		attemptTrace["httpStatus"], attemptTrace["rawResponse"], attemptTrace["receivedAt"] = response.StatusCode, string(body), time.Now().UTC().Format(time.RFC3339Nano)
 		if trace != nil {
 			if err := trace.save(); err != nil {
