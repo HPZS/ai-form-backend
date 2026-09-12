@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "request": {
+    "requestId": "00000000-0000-4000-8000-000000000001",
+    "modelPolicy": "adaptive",
+    "callPhase": "adapter-create",
+    "compilationId": "shared-compile-v1",
+    "schemaVersion": 1,
+    "runtimeVersion": "adapter-runtime-v1",
+    "mode": "create",
+    "baseRevision": null,
+    "sourceContractDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "formContractDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "userInstructionRevision": "shared-instruction-v1",
+    "toolVersion": "adapter-tools-v1",
+    "goal": "按当前参数组合宿主工具",
+    "scope": {
+      "subject": "fixture",
+      "origin": "https://fixture.invalid",
+      "formKey": "shared"
+    },
+    "parameters": [
+      {
+        "id": "year",
+        "type": "number"
+      },
+      {
+        "id": "month",
+        "type": "number"
+      }
+    ],
+    "sourceContract": {
+      "kind": "json"
+    },
+    "observation": {
+      "task": {
+        "fields": [
+          {
+            "index": 0,
+            "name": "日期"
+          }
+        ],
+        "tools": [
+          {
+            "name": "fill_field",
+            "parameters": {
+              "fieldIndex": {
+                "type": "number",
+                "required": true
+              }
+            }
+          }
+        ]
+      }
+    },
+    "limits": {
+      "maxSourceBytes": 32768,
+      "maxInputBytes": 262144,
+      "maxOutputBytes": 65536,
+      "maxSteps": 100000,
+      "maxDepth": 64,
+      "maxCollectionSize": 4096,
+      "maxTimeMs": 100,
+      "maxActions": 256,
+      "maxReads": 256,
+      "maxCallDepth": 8,
+      "maxRunMs": 300000
+    }
+  },
+  "response": {
+    "schemaVersion": 1,
+    "runtimeVersion": "adapter-runtime-v1",
+    "compilationId": "shared-compile-v1",
+    "baseRevision": null,
+    "sourceContractDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "formContractDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "userInstructionRevision": "shared-instruction-v1",
+    "toolVersion": "adapter-tools-v1",
+    "modules": [
+      {
+        "id": "fill",
+        "source": "function next(parameters, observation, state, lastOutcome) { return {kind:\"tool\",name:\"fill_field\",arguments:{fieldIndex:0},state:{pc:1}}; }"
+      }
+    ],
+    "queries": [
+      {
+        "id": "title",
+        "locator": {
+          "css": "#calendar-title"
+        },
+        "limit": 1
+      }
+    ],
+    "effects": [
+      {
+        "id": "nearer",
+        "queryRef": "title",
+        "kind": "changed",
+        "progress": {
+          "kind": "numeric-distance",
+          "terms": [
+            {
+              "queryRef": "title",
+              "parameterId": "year",
+              "weight": 12,
+              "numberIndex": 0
+            },
+            {
+              "queryRef": "title",
+              "parameterId": "month",
+              "weight": 1,
+              "numberIndex": 1,
+              "read": "text"
+            }
+          ]
+        }
+      }
+    ],
+    "entrypoints": {
+      "fillRecord": "fill"
+    },
+    "aiHandoffs": [],
+    "diagnostics": [],
+    "unverifiedConditions": []
+  },
+  "decision": {
+    "kind": "tool",
+    "name": "fill_field",
+    "arguments": {
+      "fieldIndex": 0
+    },
+    "state": {
+      "pc": 1
+    }
+  },
+  "invalidResponses": [
+    {
+      "name": "过期编译绑定",
+      "path": [
+        "compilationId"
+      ],
+      "value": "stale"
+    },
+    {
+      "name": "未知可信证据字段",
+      "path": [
+        "coverage"
+      ],
+      "value": []
+    },
+    {
+      "name": "零进展权重",
+      "path": [
+        "effects",
+        0,
+        "progress",
+        "terms",
+        0,
+        "weight"
+      ],
+      "value": 0
+    },
+    {
+      "name": "进展数字索引越界",
+      "path": [
+        "effects",
+        0,
+        "progress",
+        "terms",
+        0,
+        "numberIndex"
+      ],
+      "value": 16
+    },
+    {
+      "name": "进展多余字段",
+      "path": [
+        "effects",
+        0,
+        "progress",
+        "distance"
+      ],
+      "value": 1
+    },
+    {
+      "name": "未授权属性",
+      "path": [
+        "queries",
+        0,
+        "locator",
+        "attributes"
+      ],
+      "value": {
+        "onclick": "save()"
+      }
+    }
+  ],
+  "invalidDecisions": [
+    {
+      "name": "工具自报结果",
+      "value": {
+        "kind": "tool",
+        "name": "fill_field",
+        "arguments": {
+          "fieldIndex": 0
+        },
+        "state": {},
+        "result": "已保存"
+      }
+    }
+  ]
+}

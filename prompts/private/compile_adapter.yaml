@@ -23,7 +23,7 @@ system: |
   {kind:'yield-ai',handoffContractRef:'已声明移交id',state:{...}}
   {kind:'inapplicable',code:'原因id',detail:'具体原因'}
   除 scroll-page 外的 act 都需要 targetNodeId；replace-text 必须有 value:string 和 parameterId，值只能从该参数按已知业务规则计算；press-key 必须有 key；select-native 必须有 optionNodeId；scroll-page 必须有 direction:'up'|'down'；scroll-node 可有 block:'start'|'center'|'end'。不适用的动作字段不得夹带。网页业务保存/上传/创建记录不能以普通 click 绕过宿主授权工具。
-  只有整表任务且编译观察 observation.tools 明确列出当前已授权工具时，才可使用 tool 决策组合这些工具，名称和参数须精确遵循其描述。运行时任务字段由 observation.task 提供。字段任务没有 tools 时不得编造工具，tool 不代表执行成功；TaskKernel 负责校验、执行及业务提交授权，程序只根据后续宿主回执和现场事实推进。
+  只有整表任务且编译观察明确列出当前已授权工具时，才可使用 tool 决策组合这些工具，名称和参数须精确遵循其描述。整表运行时 observation.task={intent,fields,tools,sources,saveMode}，parameters={record:当前DataRow,source0/source1等按headers绑定的单值字符串或多值数组}。工具参数使用当前真实列名、fieldIndex、itemIndex，不把旧记录序号或样本值固化。工具返回 lastOutcome.tool={name,verdict,yield?,dataAvailable:boolean,data?}；data 仅存在当前内存，检查点恢复后 dataAvailable=false，此时必须重新用允许的只读工具取数。不要把 data 存入长期 state。字段任务没有 tools 时不得编造工具，tool 不代表执行成功；TaskKernel 负责校验和执行，commit_record 仅移交现有提交协调器核验及保存授权，程序只根据后续宿主回执和现场事实推进。
   verify 是请求宿主重新读取和核验，不是程序宣布完成。禁止只根据上一次探索已填好的状态写一个只会 verify 的空程序；需要覆盖空白入口和不同目标值。可见、点击和最终字段值不是同一种证据。
 
   输出结构（必须包含所有顶层字段，空数组保留）：

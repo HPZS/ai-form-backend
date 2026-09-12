@@ -34,7 +34,7 @@ func (m *Meta) validateMeta() error {
 	if m.ModelPolicy != "" && m.ModelPolicy != "adaptive" && m.ModelPolicy != "deterministic-only" {
 		return fmt.Errorf("modelPolicy 非法")
 	}
-	if m.CallPhase != "" && m.CallPhase != "adapter-create" && m.CallPhase != "adapter-repair" && m.CallPhase != "runtime-handoff" {
+	if m.CallPhase != "" && m.CallPhase != "source-analysis" && m.CallPhase != "runtime" && m.CallPhase != "adapter-create" && m.CallPhase != "adapter-repair" && m.CallPhase != "runtime-handoff" {
 		return fmt.Errorf("callPhase 非法")
 	}
 	if (m.CallPhase == "runtime-handoff") != (m.HandoffID != "") {

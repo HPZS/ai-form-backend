@@ -6,7 +6,7 @@
 - `schemaVersion=1`、`runtimeVersion=adapter-runtime-v1`。请求传当前目标、局部 scope/sourceContract/observation、参数定义、相关旧模块、失败上下文及全部 11 项执行预算。响应只含候选 modules/queries/effects/entrypoints/aiHandoffs、诊断及待验证条件；禁止 coverage、active 状态和成功回执。浏览器侧受限 AST、单次决策、实际回读与条件发布才决定候选是否能使用。
 - `/v1/about` 返回 `apiRevision=21`、`adapterProtocolVersion=1`、`adapterRuntimeVersions=["adapter-runtime-v1"]`。既有计费/交互协议保持 2/1。验证码、密码、SSO 登录的 `user.userId` 与 `/v1/me.userId` 都为稳定十进制字符串，插件还应绑定后端地址以隔离不同服务主体。
 - 所有 AI 请求可携带 `modelPolicy=adaptive|deterministic-only`；仅程序策略在模型和账务准入前返回 HTTP409、`ai-required`。旧客户端省略该字段时继续现有行为。
-- `callPhase=adapter-create|adapter-repair|runtime-handoff`；运行时移交必须携带 handoffId，编译阶段必须与 mode 一致。阶段、移交和编译身份写入 AIRequest；响应 meta 与请求账务查询返回真实 modelCalls（含上游和协议修复尝试）。历史无逐次用量记录返回缺失/未知，不伪造零次。
+- `callPhase=source-analysis|runtime|adapter-create|adapter-repair|runtime-handoff`；旧客户端可省略阶段。运行时移交必须携带 handoffId，编译阶段必须与 mode 一致。阶段、移交和编译身份写入 AIRequest；响应 meta 与请求账务查询返回真实 modelCalls（含上游和协议修复尝试）。历史无逐次用量记录返回缺失/未知，不伪造零次。
 
 新能力独立播种 `included/0/priceVersion=1`，模型为空时继承现有全局默认，temperature=0、maxTokens=16000。它不复制 `generate_rule` 的管理员覆盖。已有能力模式、单价、模型与历史账务不改；管理员后续可按现有 v2 配置新能力价格。
 

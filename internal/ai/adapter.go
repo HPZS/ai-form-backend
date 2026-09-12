@@ -133,8 +133,8 @@ func (r *CompileAdapterReq) Validate() error {
 			return err
 		}
 	}
-	if r.Parameters == nil || len(r.Parameters) > 128 {
-		return fmt.Errorf("parameters 缺失或超过 128 项")
+	if r.Parameters == nil || len(r.Parameters) > 64 {
+		return fmt.Errorf("parameters 缺失或超过 64 项")
 	}
 	seen := map[string]bool{}
 	for _, p := range r.Parameters {
