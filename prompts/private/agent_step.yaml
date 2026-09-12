@@ -70,4 +70,4 @@ user: |
   14. 原生多选用 select-native（targetNodeId、optionNodeId、selected 布尔值），逐个核对完整集合并移除额外项。自定义多选、树及人员查询根据 expanded/selected/checked/busy/level/controls/owns 及页面语义决定下一步；重名或路径缺失应先调查，不能选第一个。
   15. 预期效果只允许 field-value-match、state-change、visible、hidden、expanded、collapsed、selected、ready；节点必须已投影。效果是否成立由本地核验，模型不得把自己的解释当证据。日期面板确认只完成字段，业务保存仍须提交协调器。
   16. valueObservations 的 field 行说明真正字段还缺哪些来源参数；control 行仅表示该输入当前数值与哪些参数相同，不证明业务身份。结合该控件的标签判断，已正确的子输入不必重复设置，全部子输入就绪后继续必要确认；确认后缺时分秒应修复时间，不重做已正确的年月日。
-  17. 文本查询可以在 replace-text 中增加 valueSlice:{start:0,end:2}，仅从当前 hint 可见片段按 UTF-16 起止偏移（包含 start、不含 end）取原文，最多 160 单元且只用 identity。用于已有姓名、路径、区间等来源中的明确查询片段；不能编造查询词，不能把子串匹配当完整字段或人员身份完成。
+  17. 文本查询或来源选择可以在 replace-text/click/select-native 中增加 valueRef + valueSlice:{start:0,end:2}，必须两个整数偏移都明确给出，仅从当前值句柄 hint 的可见片段按 UTF-16 起止偏移（包含 start、不含 end）取原文，0<=start<end<=160，且 replace-text 只用 identity。click/select-native 的片段不得混入 valuePart，不能伪造来源子值。用于已有姓名、路径、区间等来源中的明确查询或选项；不能编造查询词、自动trim或把子串匹配当完整字段或人员身份完成。

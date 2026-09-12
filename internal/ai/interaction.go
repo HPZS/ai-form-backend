@@ -106,8 +106,8 @@ func (r *AgentStepReq) hasValueRef(ref string) bool {
 
 func validateInteractionAction(req *AgentStepReq, out agentStepOutput, action agentAction) error {
 	keys := map[string][]string{
-		"click": {"targetNodeId", "valuePart"}, "focus": {"targetNodeId"}, "replace-text": {"targetNodeId", "valueRef", "transform", "valueSlice"},
-		"press-key": {"targetNodeId", "key"}, "select-native": {"targetNodeId", "optionNodeId", "selected"},
+		"click": {"targetNodeId", "valuePart", "valueRef", "valueSlice"}, "focus": {"targetNodeId"}, "replace-text": {"targetNodeId", "valueRef", "transform", "valueSlice"},
+		"press-key": {"targetNodeId", "key"}, "select-native": {"targetNodeId", "optionNodeId", "selected", "valueRef", "valueSlice"},
 		"run-skill": {"targetNodeId", "skillId", "inputRefs"}, "scroll-node": {"targetNodeId", "block"}, "scroll-page": {"direction", "amount"},
 	}
 	var raw map[string]json.RawMessage
@@ -137,6 +137,12 @@ func validateInteractionAction(req *AgentStepReq, out agentStepOutput, action ag
 	}
 	if slice := action.ValueSlice; slice != nil {
 		hint := ""
+		if action.ValueRef == "" || !req.hasValueRef(action.ValueRef) || action.ValuePart != "" {
+			return fmt.Errorf("来源切片必须绑定当前值句柄且不得混入valuePart")
+		}
+		if action.ValueRef == req.ValueRef {
+			hint = req.ValueHint
+		}
 		if req.ValueSemantics != nil {
 			for _, part := range req.ValueSemantics.Parts {
 				if part.Ref == action.ValueRef || action.ValueRef == req.ValueRef && part.ID == "value" {
@@ -147,6 +153,9 @@ func validateInteractionAction(req *AgentStepReq, out agentStepOutput, action ag
 		if slice.Start < 0 || slice.End <= slice.Start || slice.End > 160 || slice.End > len(utf16.Encode([]rune(hint))) || action.Transform != "" && action.Transform != "identity" {
 			return fmt.Errorf("来源切片超出已披露范围")
 		}
+	}
+	if (action.Op == "click" || action.Op == "select-native") && action.ValueRef != "" && action.ValueSlice == nil {
+		return fmt.Errorf("来源选择句柄必须携带明确切片")
 	}
 	for _, evidence := range out.ExpectedEvidence {
 		kind, _ := evidence["kind"].(string)

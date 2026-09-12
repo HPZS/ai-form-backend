@@ -27,6 +27,10 @@
       {
         "id": "month",
         "type": "number"
+      },
+      {
+        "id": "path",
+        "type": "string"
       }
     ],
     "sourceContract": {
@@ -208,5 +212,247 @@
         "result": "已保存"
       }
     }
-  ]
+  ],
+  "sourceDecisions": [
+    {
+      "kind": "act",
+      "intent": {
+        "op": "click",
+        "targetNodeId": "n1",
+        "parameterId": "path",
+        "sourceSlice": {
+          "start": 0,
+          "end": 2
+        }
+      },
+      "effectContractRef": "nearer",
+      "state": {}
+    },
+    {
+      "kind": "act",
+      "intent": {
+        "op": "select-native",
+        "targetNodeId": "n1",
+        "parameterId": "path",
+        "sourceSlice": {
+          "start": 0,
+          "end": 2
+        },
+        "optionNodeId": "n2"
+      },
+      "effectContractRef": "nearer",
+      "state": {}
+    },
+    {
+      "kind": "act",
+      "intent": {
+        "op": "replace-text",
+        "targetNodeId": "n1",
+        "parameterId": "path",
+        "sourceSlice": {
+          "start": 0,
+          "end": 2
+        },
+        "value": "华东"
+      },
+      "effectContractRef": "nearer",
+      "state": {}
+    }
+  ],
+  "invalidSourceDecisions": [
+    {
+      "name": "无来源参数",
+      "value": {
+        "kind": "act",
+        "intent": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "sourceSlice": {
+            "start": 0,
+            "end": 2
+          }
+        },
+        "effectContractRef": "nearer",
+        "state": {}
+      }
+    },
+    {
+      "name": "片段越界",
+      "value": {
+        "kind": "act",
+        "intent": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "parameterId": "path",
+          "sourceSlice": {
+            "start": 0,
+            "end": 161
+          }
+        },
+        "effectContractRef": "nearer",
+        "state": {}
+      }
+    },
+    {
+      "name": "未知片段字段",
+      "value": {
+        "kind": "act",
+        "intent": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "parameterId": "path",
+          "sourceSlice": {
+            "start": 0,
+            "end": 2,
+            "trim": true
+          }
+        },
+        "effectContractRef": "nearer",
+        "state": {}
+      }
+    },
+    {
+      "name": "非允许动作",
+      "value": {
+        "kind": "act",
+        "intent": {
+          "op": "focus",
+          "targetNodeId": "n1",
+          "parameterId": "path",
+          "sourceSlice": {
+            "start": 0,
+            "end": 2
+          }
+        },
+        "effectContractRef": "nearer",
+        "state": {}
+      }
+    },
+    {
+      "name": "缺少开始偏移",
+      "value": {
+        "kind": "act",
+        "intent": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "parameterId": "path",
+          "sourceSlice": {
+            "end": 2
+          }
+        },
+        "effectContractRef": "nearer",
+        "state": {}
+      }
+    }
+  ],
+  "interaction": {
+    "sourceRef": "source-current",
+    "hint": "华东 / 浙江 / 杭州",
+    "validActions": [
+      {
+        "op": "click",
+        "targetNodeId": "n1",
+        "valueRef": "source-current",
+        "valueSlice": {
+          "start": 0,
+          "end": 2
+        }
+      },
+      {
+        "op": "select-native",
+        "targetNodeId": "n1",
+        "valueRef": "source-current",
+        "valueSlice": {
+          "start": 0,
+          "end": 2
+        },
+        "optionNodeId": "n2",
+        "selected": true
+      },
+      {
+        "op": "replace-text",
+        "targetNodeId": "n1",
+        "valueRef": "source-current",
+        "valueSlice": {
+          "start": 0,
+          "end": 2
+        },
+        "transform": "identity"
+      }
+    ],
+    "invalidActions": [
+      {
+        "name": "无来源句柄",
+        "value": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "valueSlice": {
+            "start": 0,
+            "end": 2
+          }
+        }
+      },
+      {
+        "name": "越过披露长度",
+        "value": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "valueRef": "source-current",
+          "valueSlice": {
+            "start": 0,
+            "end": 161
+          }
+        }
+      },
+      {
+        "name": "未知片段字段",
+        "value": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "valueRef": "source-current",
+          "valueSlice": {
+            "start": 0,
+            "end": 2,
+            "trim": true
+          }
+        }
+      },
+      {
+        "name": "非允许动作",
+        "value": {
+          "op": "focus",
+          "targetNodeId": "n1",
+          "valueRef": "source-current",
+          "valueSlice": {
+            "start": 0,
+            "end": 2
+          }
+        }
+      },
+      {
+        "name": "缺少开始偏移",
+        "value": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "valueRef": "source-current",
+          "valueSlice": {
+            "end": 2
+          }
+        }
+      },
+      {
+        "name": "同时伪造子值",
+        "value": {
+          "op": "click",
+          "targetNodeId": "n1",
+          "valueRef": "source-current",
+          "valueSlice": {
+            "start": 0,
+            "end": 2
+          },
+          "valuePart": "month"
+        }
+      }
+    ]
+  }
 }

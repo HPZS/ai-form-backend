@@ -16,7 +16,7 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 与插件 tests/fixtures 的固定向量相同，单仓 CI 不依赖另一 checkout。
-	if fmt.Sprintf("%x", sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))) != "d18bb5da53c0875e42fa82ae5ff79d697cf79cf8f860c20eb2b7887e6efb3d42" {
+	if fmt.Sprintf("%x", sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))) != "b63b72937a8e2f536ecd3780f0c874137a98c03895b814b3fb6e4ad498e269c4" {
 		t.Fatal("共享协议向量变化，必须同步前后端版本与两侧测试")
 	}
 	var vectors struct {
@@ -27,6 +27,15 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 			Path  []any  `json:"path"`
 			Value any    `json:"value"`
 		} `json:"invalidResponses"`
+		Interaction struct {
+			SourceRef      string            `json:"sourceRef"`
+			Hint           string            `json:"hint"`
+			ValidActions   []json.RawMessage `json:"validActions"`
+			InvalidActions []struct {
+				Name  string          `json:"name"`
+				Value json.RawMessage `json:"value"`
+			} `json:"invalidActions"`
+		} `json:"interaction"`
 	}
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
@@ -76,6 +85,32 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 		if err := meta.validateMeta(); err != nil {
 			t.Fatalf("旧客户端或正常调用阶段不兼容: %v", err)
 		}
+	}
+	interaction := validAgentReq()
+	interaction.InteractionVersion = 1
+	interaction.AllowedNodeIDs = []string{"n1", "n2"}
+	interaction.ProjectedNodeIDs = []string{"n1", "n2"}
+	interaction.ValueRef = vectors.Interaction.SourceRef
+	interaction.ValueHint = vectors.Interaction.Hint
+	checkAction := func(action json.RawMessage) error {
+		body, err := json.Marshal(map[string]any{"schemaVersion": "v1", "snapshotId": interaction.SnapshotID, "contextDigest": interaction.ContextDigest, "goalId": interaction.GoalID, "status": "act", "explanation": "当前来源片段授权", "action": action})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = validateAgentStepOutput(interaction, string(body))
+		return err
+	}
+	for _, action := range vectors.Interaction.ValidActions {
+		if err := checkAction(action); err != nil {
+			t.Fatal("共享来源动作应合法", err)
+		}
+	}
+	for _, invalid := range vectors.Interaction.InvalidActions {
+		t.Run(invalid.Name, func(t *testing.T) {
+			if checkAction(invalid.Value) == nil {
+				t.Fatal("接受非法来源动作")
+			}
+		})
 	}
 	vectors.Request.Parameters = make([]AdapterParameter, 65)
 	for i := range vectors.Request.Parameters {

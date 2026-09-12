@@ -13,27 +13,46 @@ import (
 )
 
 type agentAction struct {
-	Op           string `json:"op"`
-	TargetNodeID string `json:"targetNodeId,omitempty"`
-	ValueRef     string `json:"valueRef,omitempty"`
-	ValuePart    string `json:"valuePart,omitempty"`
-	ValueSlice   *struct {
-		Start int `json:"start"`
-		End   int `json:"end"`
-	} `json:"valueSlice,omitempty"`
-	Selected           *bool    `json:"selected,omitempty"`
-	Transform          string   `json:"transform,omitempty"`
-	Key                string   `json:"key,omitempty"`
-	OptionNodeID       string   `json:"optionNodeId,omitempty"`
-	FileSetRef         string   `json:"fileSetRef,omitempty"`
-	SkillID            string   `json:"skillId,omitempty"`
-	InputRefs          []string `json:"inputRefs,omitempty"`
-	Block              string   `json:"block,omitempty"`
-	Direction          string   `json:"direction,omitempty"`
-	Amount             string   `json:"amount,omitempty"`
-	Kind               string   `json:"kind,omitempty"`
-	AuthorizationRef   string   `json:"authorizationRef,omitempty"`
-	PreconditionDigest string   `json:"preconditionDigest,omitempty"`
+	Op                 string           `json:"op"`
+	TargetNodeID       string           `json:"targetNodeId,omitempty"`
+	ValueRef           string           `json:"valueRef,omitempty"`
+	ValuePart          string           `json:"valuePart,omitempty"`
+	ValueSlice         *agentValueSlice `json:"valueSlice,omitempty"`
+	Selected           *bool            `json:"selected,omitempty"`
+	Transform          string           `json:"transform,omitempty"`
+	Key                string           `json:"key,omitempty"`
+	OptionNodeID       string           `json:"optionNodeId,omitempty"`
+	FileSetRef         string           `json:"fileSetRef,omitempty"`
+	SkillID            string           `json:"skillId,omitempty"`
+	InputRefs          []string         `json:"inputRefs,omitempty"`
+	Block              string           `json:"block,omitempty"`
+	Direction          string           `json:"direction,omitempty"`
+	Amount             string           `json:"amount,omitempty"`
+	Kind               string           `json:"kind,omitempty"`
+	AuthorizationRef   string           `json:"authorizationRef,omitempty"`
+	PreconditionDigest string           `json:"preconditionDigest,omitempty"`
+}
+
+type agentValueSlice struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+func (slice *agentValueSlice) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Start *int `json:"start"`
+		End   *int `json:"end"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	if wire.Start == nil || wire.End == nil {
+		return fmt.Errorf("来源切片必须明确start与end")
+	}
+	slice.Start, slice.End = *wire.Start, *wire.End
+	return nil
 }
 
 type agentStepOutput struct {
