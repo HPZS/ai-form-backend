@@ -93,6 +93,21 @@
           "css": "#calendar-title"
         },
         "limit": 1
+      },
+      {
+        "id": "candidates",
+        "locator": {
+          "role": "option"
+        },
+        "limit": 20
+      },
+      {
+        "id": "labels",
+        "within": "candidates",
+        "locator": {
+          "tag": "strong"
+        },
+        "limit": 20
       }
     ],
     "effects": [
@@ -118,12 +133,34 @@
             }
           ]
         }
+      },
+      {
+        "id": "selected",
+        "queryRef": "candidates",
+        "kind": "changed"
       }
     ],
     "entrypoints": {
       "fillRecord": "fill"
     },
-    "aiHandoffs": [],
+    "aiHandoffs": [
+      {
+        "id": "choose",
+        "goal": "根据当前需求与候选描述选择",
+        "returnContractRef": "selected",
+        "resumeState": {
+          "phase": "selected"
+        },
+        "parameterIds": [
+          "path"
+        ],
+        "selection": {
+          "candidateQueryRef": "candidates",
+          "valueQueryRef": "labels",
+          "read": "text"
+        }
+      }
+    ],
     "diagnostics": [],
     "unverifiedConditions": []
   },
@@ -197,6 +234,94 @@
       "value": {
         "onclick": "save()"
       }
+    },
+    {
+      "name": "语义候选查询未知",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "unknown",
+        "valueQueryRef": "labels",
+        "read": "text"
+      }
+    },
+    {
+      "name": "语义值查询未知",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "candidates",
+        "valueQueryRef": "unknown",
+        "read": "text"
+      }
+    },
+    {
+      "name": "非属性读取夹带属性",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "candidates",
+        "valueQueryRef": "labels",
+        "read": "text",
+        "attribute": "title"
+      }
+    },
+    {
+      "name": "属性读取缺少名称",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "candidates",
+        "read": "attribute"
+      }
+    },
+    {
+      "name": "语义读取敏感属性",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "candidates",
+        "read": "attribute",
+        "attribute": "password"
+      }
+    },
+    {
+      "name": "模型夹带派生值",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": {
+        "candidateQueryRef": "candidates",
+        "valueQueryRef": "labels",
+        "read": "text",
+        "value": "模型伪造"
+      }
+    },
+    {
+      "name": "语义选择声明不能为null",
+      "path": [
+        "aiHandoffs",
+        0,
+        "selection"
+      ],
+      "value": null
     }
   ],
   "invalidDecisions": [
@@ -452,6 +577,57 @@
           },
           "valuePart": "month"
         }
+      }
+    ]
+  },
+  "semanticSelection": {
+    "contract": {
+      "candidateQueryRef": "candidates",
+      "valueQueryRef": "labels",
+      "read": "text"
+    },
+    "claim": {
+      "handoffId": "choose",
+      "candidateNodeId": "n2",
+      "reason": "当前描述满足本条服务需求"
+    },
+    "invalidClaims": [
+      {
+        "name": "跨移交声明",
+        "value": {
+          "handoffId": "other",
+          "candidateNodeId": "n2",
+          "reason": "当前描述满足本条服务需求"
+        }
+      },
+      {
+        "name": "未投影候选",
+        "value": {
+          "handoffId": "choose",
+          "candidateNodeId": "n99",
+          "reason": "当前描述满足本条服务需求"
+        }
+      },
+      {
+        "name": "伪造期望值",
+        "value": {
+          "handoffId": "choose",
+          "candidateNodeId": "n2",
+          "reason": "当前描述满足本条服务需求",
+          "value": "模型新值"
+        }
+      },
+      {
+        "name": "缺少理由",
+        "value": {
+          "handoffId": "choose",
+          "candidateNodeId": "n2",
+          "reason": ""
+        }
+      },
+      {
+        "name": "空选择声明",
+        "value": null
       }
     ]
   }

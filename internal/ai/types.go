@@ -190,9 +190,10 @@ const inputSourceMaxRunes = 160 * 1024
 // “哪里是一条记录、哪些叶子是字段”全部由模型在来源引用计划里表达。
 type CompileInputReq struct {
 	Meta
-	SourceKind string `json:"sourceKind"`
-	SourceText string `json:"sourceText"`
-	SourceHash string `json:"sourceHash"`
+	StructureLearning string `json:"structureLearning,omitempty"`
+	SourceKind        string `json:"sourceKind"`
+	SourceText        string `json:"sourceText"`
+	SourceHash        string `json:"sourceHash"`
 }
 
 func (r *CompileInputReq) Validate() error {
@@ -201,6 +202,9 @@ func (r *CompileInputReq) Validate() error {
 	}
 	if r.SourceKind != "json" && r.SourceKind != "text" {
 		return fmt.Errorf("sourceKind 必须是 json 或 text")
+	}
+	if err := validateStructureLearning(r.SourceKind, r.StructureLearning); err != nil {
+		return err
 	}
 	if r.SourceText == "" {
 		return fmt.Errorf("sourceText 不能为空")
@@ -224,16 +228,20 @@ type AuditInputPlanReq struct {
 
 type RepairInputPlanReq struct {
 	Meta
-	SourceKind string          `json:"sourceKind"`
-	SourceText string          `json:"sourceText"`
-	SourceHash string          `json:"sourceHash"`
-	Plan       json.RawMessage `json:"plan"`
-	Audit      json.RawMessage `json:"audit"`
+	StructureLearning string          `json:"structureLearning,omitempty"`
+	SourceKind        string          `json:"sourceKind"`
+	SourceText        string          `json:"sourceText"`
+	SourceHash        string          `json:"sourceHash"`
+	Plan              json.RawMessage `json:"plan"`
+	Audit             json.RawMessage `json:"audit"`
 }
 
 func (r *RepairInputPlanReq) Validate() error {
 	base := &AuditInputPlanReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash, Plan: r.Plan}
 	if err := base.Validate(); err != nil {
+		return err
+	}
+	if err := validateStructureLearning(r.SourceKind, r.StructureLearning); err != nil {
 		return err
 	}
 	if len(r.Audit) == 0 || !json.Valid(r.Audit) || len(r.Audit) > 64*1024 {
@@ -278,6 +286,7 @@ type GoalValueObservation struct {
 // ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
 type AgentStepReq struct {
 	Meta
+	RuntimeHandoff     *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
 	ValueObservations  []GoalValueObservation `json:"valueObservations,omitempty"`
 	InteractionVersion int                    `json:"interactionVersion,omitempty"`
 	SourceColumnRef    string                 `json:"sourceColumnRef,omitempty"`
@@ -489,6 +498,9 @@ func (r *AgentStepReq) Validate() error {
 		return err
 	}
 	if err := r.validateMeta(); err != nil {
+		return err
+	}
+	if err := validateAdapterHandoff(r.Meta, r.RuntimeHandoff); err != nil {
 		return err
 	}
 	for name, value := range map[string]string{

@@ -31,16 +31,17 @@ type TaskFieldSummary struct {
 }
 type TaskAgentReq struct {
 	Meta
-	SchemaVersion  string             `json:"schemaVersion"`
-	RunID          string             `json:"runId"`
-	SnapshotID     string             `json:"snapshotId"`
-	ContextDigest  string             `json:"contextDigest"`
-	RowIndex       int                `json:"rowIndex"`
-	CallIndex      int                `json:"callIndex"`
-	RemainingCalls int                `json:"remainingCalls"`
-	Intent         string             `json:"intent"`
-	SaveMode       string             `json:"saveMode"`
-	Fields         []TaskFieldSummary `json:"fields"`
+	RuntimeHandoff *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
+	SchemaVersion  string                 `json:"schemaVersion"`
+	RunID          string                 `json:"runId"`
+	SnapshotID     string                 `json:"snapshotId"`
+	ContextDigest  string                 `json:"contextDigest"`
+	RowIndex       int                    `json:"rowIndex"`
+	CallIndex      int                    `json:"callIndex"`
+	RemainingCalls int                    `json:"remainingCalls"`
+	Intent         string                 `json:"intent"`
+	SaveMode       string                 `json:"saveMode"`
+	Fields         []TaskFieldSummary     `json:"fields"`
 	Sources        []struct {
 		Name  string `json:"name"`
 		Count int    `json:"count"`
@@ -70,6 +71,12 @@ func TaskAgentRepairMessage(req Request, validation error) string {
 func (r *TaskAgentReq) Validate() error {
 	if err := r.validateMeta(); err != nil {
 		return err
+	}
+	if err := validateAdapterHandoff(r.Meta, r.RuntimeHandoff); err != nil {
+		return err
+	}
+	if r.RuntimeHandoff != nil && r.RuntimeHandoff.Selection != nil {
+		return fmt.Errorf("语义候选选择仅通过字段移交执行")
 	}
 	if r.SchemaVersion != "v1" || r.RunID == "" || r.SnapshotID == "" || r.ContextDigest == "" || r.TaskID == "" {
 		return fmt.Errorf("任务上下文或版本无效")

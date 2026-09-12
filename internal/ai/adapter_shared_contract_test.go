@@ -16,7 +16,7 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 与插件 tests/fixtures 的固定向量相同，单仓 CI 不依赖另一 checkout。
-	if fmt.Sprintf("%x", sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))) != "b63b72937a8e2f536ecd3780f0c874137a98c03895b814b3fb6e4ad498e269c4" {
+	if fmt.Sprintf("%x", sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))) != "faa365a77ea42a637fb2e65aafe008b80e060be3b672cc687bf4601557b3123d" {
 		t.Fatal("共享协议向量变化，必须同步前后端版本与两侧测试")
 	}
 	var vectors struct {
@@ -36,6 +36,14 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 				Value json.RawMessage `json:"value"`
 			} `json:"invalidActions"`
 		} `json:"interaction"`
+		SemanticSelection struct {
+			Contract      AdapterHandoffSelection `json:"contract"`
+			Claim         json.RawMessage         `json:"claim"`
+			InvalidClaims []struct {
+				Name  string          `json:"name"`
+				Value json.RawMessage `json:"value"`
+			} `json:"invalidClaims"`
+		} `json:"semanticSelection"`
 	}
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
@@ -109,6 +117,26 @@ func TestSharedAdapterContractVectors(t *testing.T) {
 		t.Run(invalid.Name, func(t *testing.T) {
 			if checkAction(invalid.Value) == nil {
 				t.Fatal("接受非法来源动作")
+			}
+		})
+	}
+	interaction.CallPhase, interaction.HandoffID, interaction.GoalKind = "runtime-handoff", "choose", "set-field-value"
+	interaction.RuntimeHandoff = &AdapterHandoffContext{ProgramID: strings.Repeat("a", 64), Revision: strings.Repeat("b", 64), ModuleID: "fill", Goal: "选择当前候选", Selection: &vectors.SemanticSelection.Contract}
+	checkSelection := func(claim json.RawMessage) error {
+		body, err := json.Marshal(map[string]any{"schemaVersion": "v1", "snapshotId": interaction.SnapshotID, "contextDigest": interaction.ContextDigest, "goalId": interaction.GoalID, "status": "act", "explanation": "当前语义选择", "action": map[string]string{"op": "click", "targetNodeId": "n2"}, "semanticSelection": claim})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = validateAgentStepOutput(interaction, string(body))
+		return err
+	}
+	if err := checkSelection(vectors.SemanticSelection.Claim); err != nil {
+		t.Fatal("共享语义候选声明应合法", err)
+	}
+	for _, invalid := range vectors.SemanticSelection.InvalidClaims {
+		t.Run(invalid.Name, func(t *testing.T) {
+			if checkSelection(invalid.Value) == nil {
+				t.Fatal("接受非法语义候选声明")
 			}
 		})
 	}

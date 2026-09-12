@@ -102,7 +102,7 @@ func TestCompileAdapterPromptAndRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	system, user, version, err := store.Render("compile_adapter", adapterRequest())
-	if err != nil || version != "v1" || !strings.Contains(system, "function next") || !strings.Contains(user, "compile-1") {
+	if err != nil || version != "v2" || !strings.Contains(system, "function next") || !strings.Contains(system, "candidateQueryRef") || !strings.Contains(user, "compile-1") {
 		t.Fatalf("提示词未绑定正式协议: %s %v", version, err)
 	}
 	if temperature, tokens := CapabilityGenerationParams("compile_adapter"); temperature != 0 || tokens < 12000 {

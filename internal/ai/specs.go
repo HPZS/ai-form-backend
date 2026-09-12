@@ -56,16 +56,17 @@ func (slice *agentValueSlice) UnmarshalJSON(data []byte) error {
 }
 
 type agentStepOutput struct {
-	SchemaVersion    string           `json:"schemaVersion"`
-	SnapshotID       string           `json:"snapshotId"`
-	ContextDigest    string           `json:"contextDigest"`
-	GoalID           string           `json:"goalId"`
-	Status           string           `json:"status"`
-	Explanation      string           `json:"explanation"`
-	Action           json.RawMessage  `json:"action,omitempty"`
-	ContextRequest   json.RawMessage  `json:"contextRequest,omitempty"`
-	ExpectedEvidence []map[string]any `json:"expectedEvidence,omitempty"`
-	UserRequest      string           `json:"userRequest,omitempty"`
+	SchemaVersion     string           `json:"schemaVersion"`
+	SnapshotID        string           `json:"snapshotId"`
+	ContextDigest     string           `json:"contextDigest"`
+	GoalID            string           `json:"goalId"`
+	Status            string           `json:"status"`
+	Explanation       string           `json:"explanation"`
+	Action            json.RawMessage  `json:"action,omitempty"`
+	ContextRequest    json.RawMessage  `json:"contextRequest,omitempty"`
+	ExpectedEvidence  []map[string]any `json:"expectedEvidence,omitempty"`
+	UserRequest       string           `json:"userRequest,omitempty"`
+	SemanticSelection json.RawMessage  `json:"semanticSelection,omitempty"`
 }
 
 type agentContextRequest struct {
@@ -113,6 +114,9 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 	}
 	switch out.Status {
 	case "done", "need-context", "need-user", "blocked":
+		if len(out.SemanticSelection) != 0 {
+			return out, fmt.Errorf("非act状态不得声明语义选择")
+		}
 		if len(out.Action) > 0 && string(out.Action) != "null" {
 			return out, fmt.Errorf("非 act 状态夹带 action")
 		}
@@ -189,6 +193,9 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 	}
 	projected := func(id string) bool {
 		return id != "" && inStrings(req.ProjectedNodeIDs, id) && !inStrings(req.ForbiddenNodeIDs, id) && (req.InteractionVersion != 1 || inStrings(req.AllowedNodeIDs, id))
+	}
+	if err := validateAgentSemanticSelection(req, out, action, projected); err != nil {
+		return out, err
 	}
 	if req.InteractionVersion == 1 {
 		if err := validateInteractionAction(req, out, action); err != nil {
@@ -592,17 +599,19 @@ type textInputRecord struct {
 }
 
 type compiledInputPlan struct {
-	SchemaVersion string            `json:"schemaVersion"`
-	SourceHash    string            `json:"sourceHash"`
-	SourceKind    string            `json:"sourceKind"`
-	EntityName    string            `json:"entityName"`
-	RecordPointer string            `json:"recordPointer"`
-	RecordMode    string            `json:"recordMode"`
-	Fields        []jsonInputField  `json:"fields"`
-	Records       []textInputRecord `json:"records"`
-	Exclusions    []inputExclusion  `json:"exclusions"`
-	Confidence    float64           `json:"confidence"`
-	Explanation   string            `json:"explanation"`
+	TextStructure       *textStructureCandidate `json:"textStructure,omitempty"`
+	StructureDiagnostic string                  `json:"structureDiagnostic,omitempty"`
+	SchemaVersion       string                  `json:"schemaVersion"`
+	SourceHash          string                  `json:"sourceHash"`
+	SourceKind          string                  `json:"sourceKind"`
+	EntityName          string                  `json:"entityName"`
+	RecordPointer       string                  `json:"recordPointer"`
+	RecordMode          string                  `json:"recordMode"`
+	Fields              []jsonInputField        `json:"fields"`
+	Records             []textInputRecord       `json:"records"`
+	Exclusions          []inputExclusion        `json:"exclusions"`
+	Confidence          float64                 `json:"confidence"`
+	Explanation         string                  `json:"explanation"`
 }
 
 func decodePointerPart(part string) (string, error) {
@@ -691,6 +700,9 @@ func quoteOccurrenceExists(source, quote string, occurrence int) bool {
 }
 
 func validateCompiledInput(req *CompileInputReq, out *compiledInputPlan) error {
+	if err := validateTextStructureOutput(req, out); err != nil {
+		return err
+	}
 	if out.SchemaVersion != "v1" {
 		return fmt.Errorf("schemaVersion 必须是 v1")
 	}
@@ -844,8 +856,13 @@ func Specs() []Spec {
 				if err := json.Unmarshal(r.Plan, &plan); err != nil {
 					return nil, fmt.Errorf("plan 无法解析: %w", err)
 				}
+				learning := ""
+				if plan.TextStructure != nil || plan.StructureDiagnostic != "" {
+					learning = literalFieldsVersion
+				}
 				if err := validateCompiledInput(&CompileInputReq{
 					Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash,
+					StructureLearning: learning,
 				}, &plan); err != nil {
 					return nil, fmt.Errorf("待审计计划未通过来源校验: %w", err)
 				}
@@ -908,7 +925,7 @@ func Specs() []Spec {
 						return nil, fmt.Errorf("AI 输出缺少必填字段 %q", key)
 					}
 				}
-				if err := validateCompiledInput(&CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash}, &out); err != nil {
+				if err := validateCompiledInput(&CompileInputReq{Meta: r.Meta, SourceKind: r.SourceKind, SourceText: r.SourceText, SourceHash: r.SourceHash, StructureLearning: r.StructureLearning}, &out); err != nil {
 					return nil, err
 				}
 				return out, nil

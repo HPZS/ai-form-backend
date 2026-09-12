@@ -16,8 +16,8 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染 agent_step 提示词失败: %v", err)
 	}
-	if version != "v5" {
-		t.Fatalf("提示词版本应为 v4，实际 %q", version)
+	if version != "v7" {
+		t.Fatalf("提示词版本应为 v7，实际 %q", version)
 	}
 	for _, want := range []string{`"status":"act"`, `"status":"done"`, `"status":"need-context"`, "未使用字段必须省略"} {
 		if !strings.Contains(user, want) {

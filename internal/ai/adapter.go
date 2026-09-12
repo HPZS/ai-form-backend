@@ -198,11 +198,12 @@ type AdapterEntrypoints struct {
 	FillRecord string `json:"fillRecord"`
 }
 type AdapterHandoff struct {
-	ID                string          `json:"id"`
-	Goal              string          `json:"goal"`
-	ReturnContractRef string          `json:"returnContractRef"`
-	ResumeState       json.RawMessage `json:"resumeState"`
-	ParameterIDs      []string        `json:"parameterIds,omitempty"`
+	ID                string                   `json:"id"`
+	Goal              string                   `json:"goal"`
+	ReturnContractRef string                   `json:"returnContractRef"`
+	ResumeState       json.RawMessage          `json:"resumeState"`
+	ParameterIDs      []string                 `json:"parameterIds,omitempty"`
+	Selection         *AdapterHandoffSelection `json:"selection,omitempty"`
 }
 type CompileAdapterOutput struct {
 	SchemaVersion           int                `json:"schemaVersion"`
@@ -343,11 +344,26 @@ func validateCompileAdapterOutput(r *CompileAdapterReq, content string) (Compile
 		}
 	}
 	handoffs := map[string]bool{}
+	var rawHandoffs []map[string]json.RawMessage
+	if err := json.Unmarshal(keys["aiHandoffs"], &rawHandoffs); err != nil {
+		return out, err
+	}
+	for _, h := range rawHandoffs {
+		if bytes.Equal(bytes.TrimSpace(h["selection"]), []byte("null")) {
+			return out, fmt.Errorf("语义选择声明不能为null")
+		}
+	}
 	for _, h := range out.AIHandoffs {
 		if !adapterID.MatchString(h.ID) || handoffs[h.ID] || !effects[h.ReturnContractRef] || strings.TrimSpace(h.Goal) == "" || len([]rune(h.Goal)) > 2000 || len(h.ParameterIDs) > 64 {
 			return out, fmt.Errorf("AI 移交声明非法")
 		}
 		handoffs[h.ID] = true
+		if err := validateAdapterHandoffSelection(h.Selection); err != nil {
+			return out, err
+		}
+		if h.Selection != nil && (queries[h.Selection.CandidateQueryRef].ID == "" || h.Selection.ValueQueryRef != "" && queries[h.Selection.ValueQueryRef].ID == "") {
+			return out, fmt.Errorf("语义选择引用未登记查询")
+		}
 		if err := validateAdapterJSON("resumeState", h.ResumeState, 65536, false); err != nil {
 			return out, err
 		}

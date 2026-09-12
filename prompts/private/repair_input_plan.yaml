@@ -1,4 +1,4 @@
-version: v2
+version: v3
 system: |
   你是数据来源引用计划修正器。只按独立审计指出的问题修正候选计划；禁止生成、猜测、总结或改写来源值。输出必须仍是完整的 v1 计划，只输出 JSON。
 user: |
@@ -20,3 +20,7 @@ user: |
   3. 原计划正确的记录边界和字段应保留；遗漏的关键业务字段补入 fields，明确无关内容放 exclusions。
   4. 输出完整计划，schemaVersion/sourceKind/sourceHash 必须保持不变。
   5. JSON 字段禁止翻译或重命名：一级字段 name 保留原始 key，嵌套字段用相对记录根的完整 RFC6901 Pointer；空 key 或以 / 开头的 key 也用 Pointer 避免歧义。语义说明写在 explanation。
+
+  {{- if eq .Req.StructureLearning "literal-fields-v1"}}
+  同时请求 literal-fields-v1 字面结构学习：输出可选 textStructure 和 structureDiagnostic。只有每个原始文本块均由相同顺序的显式字段标签构成，才输出 textStructure={"schemaVersion":1,"kind":"literal-fields-v1","recordSeparator":"记录间的精确标点或空白，单条可为空","fields":[{"name":"原文标签","label":"与name完全相同的原文标签","delimiter":"标签后的精确标点或空白","suffix":"本字段值后的精确标点或空白；最后字段必须为空串"}]}。标签最多200个UTF-16单位，每个界符最多16个UTF-16单位，字段最多1024项且标签唯一；界符只能包含标点、符号和空白，不能包含字母、数字或汉字。只记录标签与界符，不存任何业务值、quote、occurrence、旧来源ID或哈希，不输出正则、源码或固定下标。块首尾空白可忽略，其余内容必须由所有字段及界符完整顺序覆盖；不得跳过额外标题、页脚、自由叙述或新增字段。值只取当前范围内去掉首尾空白后的逐字原文；值不能包含换行、已声明标签或任何字段界符，不能跨原始内容块。资料标题【资料：…；位置：…】是宿主合成定位说明，不是原始块内容。正常 records 中的 name 也必须保留这些原始标签，quote/occurrence 必须与本条范围严格一致；空字段保留模板列，records 中可省略空字段，不虚构空quote。若没有可验证的唯一边界、跨段落记录、混合表格/图片、边界冲突或自由文本，应输出 textStructure:null 和具体中文 structureDiagnostic，继续忠实输出当轮语义 records，不得声称已经可复用。
+  {{- end}}

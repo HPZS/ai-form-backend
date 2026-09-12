@@ -168,6 +168,7 @@ func run() (runErr error) {
 	}
 	output["meta"] = map[string]any{"capability": spec.Name, "promptVersion": version, "schemaVersion": "v1", "model": model, "latencyMs": time.Since(started).Milliseconds(), "evaluation": true, "attempts": attempts, "promptTokens": promptTokens, "completionTokens": completionTokens, "temperature": temperature, "maxTokens": maxTokens}
 	meta := output["meta"].(map[string]any)
+	meta["requestId"] = req.GetMeta().RequestID
 	meta["callPhase"], meta["handoffId"], meta["compilationId"], meta["modelCalls"] = req.GetMeta().CallPhase, req.GetMeta().HandoffID, req.GetMeta().CompilationID, attempts
 	if trace != nil {
 		trace.Result = output
