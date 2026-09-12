@@ -15,13 +15,21 @@ import (
 	"github.com/HPZS/ai-form-backend/internal/ai"
 )
 
-func run() error {
+func run() (runErr error) {
+	trace, err := newEvalTrace(os.Getenv("AIFORM_EVAL_TRACE_DIR"))
+	if err != nil {
+		return fmt.Errorf("创建评测证据失败: %w", err)
+	}
+	defer trace.finish(&runErr)
 	var input struct {
 		Capability string          `json:"capability"`
 		Payload    json.RawMessage `json:"payload"`
 	}
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, 1024*1024)).Decode(&input); err != nil {
 		return err
+	}
+	if trace != nil {
+		trace.Capability, trace.Payload = input.Capability, input.Payload
 	}
 	var spec *ai.Spec
 	for _, candidate := range ai.Specs() {
@@ -60,6 +68,9 @@ func run() error {
 	}
 	endpoint := strings.TrimRight(os.Getenv("AIFORM_UPSTREAM_URL"), "/")
 	key, model := os.Getenv("AIFORM_UPSTREAM_KEY"), os.Getenv("AIFORM_EVAL_MODEL")
+	if trace != nil {
+		trace.Model, trace.PromptVersion = model, version
+	}
 	if !strings.HasPrefix(endpoint, "https://") || key == "" || model == "" {
 		return fmt.Errorf("需要 HTTPS 上游地址、评测密钥和模型配置")
 	}
@@ -77,6 +88,13 @@ func run() error {
 	for attempt := 0; attempt < 2; attempt++ {
 		attempts++
 		payload, _ := json.Marshal(map[string]any{"model": model, "messages": messages, "temperature": temperature, "max_tokens": maxTokens})
+		attemptTrace := map[string]any{"attempt": attempt + 1, "request": json.RawMessage(payload), "startedAt": time.Now().UTC().Format(time.RFC3339Nano)}
+		if trace != nil {
+			trace.Attempts = append(trace.Attempts, attemptTrace)
+			if err := trace.save(); err != nil {
+				return err
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/chat/completions", bytes.NewReader(payload))
 		if err != nil {
@@ -93,6 +111,12 @@ func run() error {
 		body, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
 		response.Body.Close()
 		cancel()
+		attemptTrace["httpStatus"], attemptTrace["rawResponse"], attemptTrace["receivedAt"] = response.StatusCode, string(body), time.Now().UTC().Format(time.RFC3339Nano)
+		if trace != nil {
+			if err := trace.save(); err != nil {
+				return err
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -120,6 +144,11 @@ func run() error {
 		promptTokens += completion.Usage.PromptTokens
 		completionTokens += completion.Usage.CompletionTokens
 		result, err = spec.Post(req, completion.Choices[0].Message.Content)
+		if err != nil {
+			attemptTrace["validationError"] = err.Error()
+		} else {
+			attemptTrace["validated"] = true
+		}
 		if err == nil {
 			break
 		}
@@ -139,6 +168,9 @@ func run() error {
 	output["meta"] = map[string]any{"capability": spec.Name, "promptVersion": version, "schemaVersion": "v1", "model": model, "latencyMs": time.Since(started).Milliseconds(), "evaluation": true, "attempts": attempts, "promptTokens": promptTokens, "completionTokens": completionTokens, "temperature": temperature, "maxTokens": maxTokens}
 	meta := output["meta"].(map[string]any)
 	meta["callPhase"], meta["handoffId"], meta["compilationId"], meta["modelCalls"] = req.GetMeta().CallPhase, req.GetMeta().HandoffID, req.GetMeta().CompilationID, attempts
+	if trace != nil {
+		trace.Result = output
+	}
 	return json.NewEncoder(os.Stdout).Encode(output)
 }
 
