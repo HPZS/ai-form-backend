@@ -255,3 +255,61 @@ func TestExecutionBudgetExtensionRetainsEveryConfirmationAndCounters(t *testing.
 		t.Fatalf("扩额丢失累计消耗、恢复组或重复增加: %+v", budget)
 	}
 }
+
+type budgetDeadlineTransport struct{ cancel context.CancelFunc }
+
+func (f budgetDeadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	httptrace.ContextClientTrace(r.Context()).WroteRequest(httptrace.WroteRequestInfo{})
+	if f.cancel != nil {
+		f.cancel()
+	}
+	<-r.Context().Done()
+	return nil, r.Context().Err()
+}
+func TestExecutionWaitDeadlineRetainsBudgetCauseAndUsage(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			upstream := httptest.NewServer(chatOK(`{}`))
+			defer upstream.Close()
+			_, db, uid, task, _ := v2Fixture(t, upstream)
+			g := &Gateway{db: db}
+			budget := model.AIExecutionBudget{UserID: uid, WorkID: task, MaxAttempts: ExecutionMaxAttempts, MaxTokens: ExecutionMaxTokens, MaxWaitMs: ExecutionMaxWaitMs, WaitMs: ExecutionMaxWaitMs - 100}
+			if err := db.Create(&budget).Error; err != nil {
+				t.Fatal(err)
+			}
+			r := model.AIRequest{UserID: uid, TaskID: task, RequestID: uuid.NewString(), Capability: "match_columns", Status: model.AIReqPending, PolicyVersion: "v2", BillingMode: "included", LeaseToken: uuid.NewString(), UsageDetails: "[]"}
+			if err := db.Create(&r).Error; err != nil {
+				t.Fatal(err)
+			}
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			transport := budgetDeadlineTransport{}
+			if cancelled {
+				transport.cancel = cancel
+			}
+			caller := NewCaller(db)
+			caller.http.Transport = transport
+			_, err := caller.Call(g.withExecutionBudget(parent, &r), "match_columns", nil)
+			expected := "AI_TASK_BUDGET_EXHAUSTED"
+			if cancelled {
+				expected = "AI_CANCELLED"
+			}
+			if aiFailureCode(err) != expected {
+				t.Fatalf("预算截止与用户取消不得伪装上游故障: expected=%s err=%v code=%s", expected, err, aiFailureCode(err))
+			}
+			g.failV2(&r, "execution_failed", err)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			g.respondV2(c, &r, false, true)
+			if w.Code != 409 || !strings.Contains(w.Body.String(), expected) || strings.Contains(w.Body.String(), `"executionBudget"`) == cancelled {
+				t.Fatalf("缺少准确终态与预算解释: %d %s", w.Code, w.Body.String())
+			}
+			if err := db.First(&budget, budget.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if budget.Attempts != 1 || budget.ReservedTokens <= 0 || budget.ReservedWaitMs != 0 || requestUsageComplete(&r) {
+				t.Fatalf("已分发无 usage 不能记零或释放预留: %+v %s", budget, r.UsageDetails)
+			}
+		})
+	}
+}

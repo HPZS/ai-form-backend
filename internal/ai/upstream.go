@@ -276,6 +276,9 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 			}
 		}
 		res, err := c.callOnce(attemptContext, up, params, messages)
+		if cause := context.Cause(attemptContext); err != nil && executionBudgetCode(cause) != "" {
+			err = errors.Join(err, cause)
+		}
 		{
 			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown", Dispatch: dispatchUnknown}
 			if res != nil {
@@ -301,7 +304,7 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 			c.markOK(up.ID)
 			return res, nil
 		}
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil || executionBudgetCode(err) != "" {
 			return nil, err
 		}
 		if _, managed := ctx.Value(modelAttemptKey{}).(startModelAttempt); managed && aiFailureCode(err) == "AI_UPSTREAM_AUTH_FAILED" {

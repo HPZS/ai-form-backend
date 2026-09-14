@@ -78,6 +78,7 @@ func (g *Gateway) withExecutionBudget(ctx context.Context, r *model.AIRequest) c
 		// UTF-8 字节数加消息结构余量作为保守输入预留；供应商实际 usage 仍是最终已知用量。
 		reserved := int64(len(body) + len(messages)*256 + params.MaxTokens)
 		waitAllowance := int64(callTimeout / time.Millisecond)
+		waitCause := error(context.DeadlineExceeded)
 		index := 0
 		scope, group := executionScope(r), recoveryGroup(r)
 		reservedRequest := *r
@@ -118,8 +119,9 @@ func (g *Gateway) withExecutionBudget(ctx context.Context, r *model.AIRequest) c
 				denied = &executionBudgetError{"AI_TASK_BUDGET_EXHAUSTED"}
 				return nil
 			}
-			if remaining < waitAllowance {
+			if remaining <= waitAllowance {
 				waitAllowance = remaining
+				waitCause = &executionBudgetError{"AI_TASK_BUDGET_EXHAUSTED"}
 			}
 			var attempts []AttemptUsage
 			if current.UsageDetails != "" {
@@ -154,7 +156,7 @@ func (g *Gateway) withExecutionBudget(ctx context.Context, r *model.AIRequest) c
 			return nil, nil, denied
 		}
 		r.UsageDetails, r.InputTokens, r.OutputTokens = reservedRequest.UsageDetails, reservedRequest.InputTokens, reservedRequest.OutputTokens
-		attemptContext, cancel := context.WithTimeout(parent, time.Duration(waitAllowance)*time.Millisecond)
+		attemptContext, cancel := context.WithTimeoutCause(parent, time.Duration(waitAllowance)*time.Millisecond, waitCause)
 		finish := func(item AttemptUsage) error {
 			defer cancel()
 			completedRequest := *r
