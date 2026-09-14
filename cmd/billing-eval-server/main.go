@@ -14,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -51,6 +53,21 @@ func run() error {
 	if err = db.Model(&model.AIDefault{}).Where("id = ?", 1).Update("model", modelName).Error; err != nil {
 		return err
 	}
+	if raw := os.Getenv("AIFORM_EVAL_CAPABILITY_MODELS"); raw != "" {
+		var overrides map[string]string
+		if err = json.Unmarshal([]byte(raw), &overrides); err != nil {
+			return fmt.Errorf("能力模型配置不是有效 JSON")
+		}
+		for capability, name := range overrides {
+			result := db.Model(&model.CapabilityPrice{}).Where("capability = ?", capability).Update("model", name)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("能力模型配置引用未知能力 %s", capability)
+			}
+		}
+	}
 	if err = db.Create(&model.AIUpstream{Name: "billing-eval", BaseURL: endpoint, APIKey: key, Enabled: true}).Error; err != nil {
 		return err
 	}
@@ -82,11 +99,38 @@ func run() error {
 	router.GET("/fixture-state", func(c *gin.Context) {
 		var rows []model.AIRequest
 		var ledger []model.CreditLedger
-		db.Select("request_id, task_id, capability, status, credits, billing_reason").Find(&rows)
-		db.Select("request_id,task_id,delta").Find(&ledger)
-		c.JSON(200, gin.H{"requests": rows, "ledger": ledger})
+		var budgets []model.AIExecutionBudget
+		if err := db.Select("request_id, task_id, work_id, recovery_group_id, capability, status, failure_code, credits, billing_reason, input_tokens, output_tokens, usage_details, latency_ms").Order("id").Find(&rows).Error; err != nil {
+			c.JSON(500, gin.H{"error": "读取请求快照失败"})
+			log.Printf("读取验收请求失败: %v", err)
+			return
+		}
+		if err := db.Select("request_id,task_id,delta").Order("id").Find(&ledger).Error; err != nil {
+			c.JSON(500, gin.H{"error": "读取账务快照失败"})
+			log.Printf("读取验收账务失败: %v", err)
+			return
+		}
+		if err := db.Order("id").Find(&budgets).Error; err != nil {
+			c.JSON(500, gin.H{"error": "读取预算快照失败"})
+			log.Printf("读取验收预算失败: %v", err)
+			return
+		}
+		c.JSON(200, gin.H{"requests": rows, "ledger": ledger, "budgets": budgets})
 	})
-	if err = json.NewEncoder(os.Stdout).Encode(map[string]any{"url": "http://127.0.0.1:18097", "token": pair.AccessToken, "schema": schema, "model": modelName}); err != nil {
+	address := os.Getenv("AIFORM_BILLING_EVAL_ADDR")
+	if address == "" {
+		address = "127.0.0.1:18097"
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host != "127.0.0.1" {
+		return fmt.Errorf("验收服务只允许监听本机回环地址")
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	if err = json.NewEncoder(os.Stdout).Encode(map[string]any{"url": "http://" + listener.Addr().String(), "token": pair.AccessToken, "userId": fmt.Sprint(user.ID), "schema": schema, "model": modelName}); err != nil {
 		return err
 	}
 	go func() {
@@ -96,5 +140,5 @@ func run() error {
 			}
 		}
 	}()
-	return router.Run("127.0.0.1:18097")
+	return http.Serve(listener, router)
 }
