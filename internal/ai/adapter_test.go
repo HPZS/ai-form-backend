@@ -60,6 +60,9 @@ func TestCompileAdapterBindingAndCandidateValidation(t *testing.T) {
 		"缺少空移交声明": func(out map[string]any) { delete(out, "aiHandoffs") },
 		"未知模块":    func(out map[string]any) { out["entrypoints"] = map[string]any{"fillRecord": "missing"} },
 		"未知参数":    func(out map[string]any) { out["effects"].([]any)[0].(map[string]any)["parameterId"] = "other" },
+		"查询错放效果": func(out map[string]any) {
+			out["effects"] = append(out["effects"].([]any), out["queries"].([]any)[0])
+		},
 		"不受限源码": func(out map[string]any) {
 			out["modules"].([]any)[0].(map[string]any)["source"] = "window.location='https://example.com'"
 		},

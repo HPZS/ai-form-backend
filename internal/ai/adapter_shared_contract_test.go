@@ -165,4 +165,25 @@ func TestSharedAdapterSystemPromptDigest(t *testing.T) {
 	if fmt.Sprintf("%x", sha256.Sum256([]byte(system))) != strings.TrimSpace(string(expected)) {
 		t.Fatal("正式system已变化，请同步插件adapterPrompt.ts与共享SHA256")
 	}
+	_, example, ok := strings.Cut(system, "JSON示例：\n")
+	if !ok {
+		t.Fatal("缺少可解码的完整候选示例")
+	}
+	example, _, _ = strings.Cut(example, "\n示例结束")
+	var candidate map[string]any
+	if err := json.Unmarshal([]byte(example), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	req := adapterRequest()
+	bindings := adapterOutput(req)
+	for _, key := range []string{"schemaVersion", "runtimeVersion", "compilationId", "baseRevision", "sourceContractDigest", "formContractDigest", "userInstructionRevision", "toolVersion"} {
+		candidate[key] = bindings[key]
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateCompileAdapterOutput(req, string(raw)); err != nil {
+		t.Fatalf("提示词示例不符合正式协议：%v", err)
+	}
 }
