@@ -272,7 +272,8 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 		}
 		err = &outputValidationError{err}
 		log.Printf("[AI-V2-INVALID] request=%s attempt=%d reason=%s", r.RequestID, attempt+1, safeValidationReason(err))
-		messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
+		// 原候选作为低优先级模型消息供定位错误，后续尝试仍走同一预算和原请求身份。
+		messages = append(messages, ChatMessage{Role: "assistant", Content: call.Content}, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 	}
 	r.Upstream, r.Model = usage.Upstream, usage.Model
 	r.PromptVersion, r.SchemaVersion, r.LatencyMs = promptVer, "v1", int(time.Since(start).Milliseconds())

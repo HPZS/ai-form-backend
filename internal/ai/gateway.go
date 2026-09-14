@@ -295,7 +295,7 @@ func (g *Gateway) Handler(spec Spec) gin.HandlerFunc {
 			outputLen, outputHash := invalidOutputFingerprint(call.Content)
 			log.Printf("[AI-INVALID] request_id=%s capability=%s attempt=%d validation=%s output_len=%d output_sha256=%s",
 				meta.RequestID, spec.Name, attempt+1, safeValidationReason(err), outputLen, outputHash)
-			messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
+			messages = append(messages, ChatMessage{Role: "assistant", Content: call.Content}, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 		}
 		if err != nil {
 			g.finishFailed(ar.ID, leaseToken, model.AIReqInvalid, usage, promptVer, start)

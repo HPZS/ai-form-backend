@@ -105,7 +105,7 @@ func TestCompileAdapterPromptAndRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	system, user, version, err := store.Render("compile_adapter", adapterRequest())
-	if err != nil || version != "v5" || !strings.Contains(system, "function next") || !strings.Contains(system, "candidateQueryRef") || !strings.Contains(system, "satisfied/changed/failed/unknown/ready") || !strings.Contains(user, "compile-1") || !strings.Contains(user, "target") || !strings.Contains(user, "truncated") {
+	if err != nil || version != "v6" || !strings.Contains(system, "function next") || !strings.Contains(system, "candidateQueryRef") || !strings.Contains(system, "satisfied/changed/failed/unknown/ready") || !strings.Contains(user, "compile-1") || !strings.Contains(user, "target") || !strings.Contains(user, "truncated") {
 		t.Fatalf("提示词未绑定正式协议: %s %v", version, err)
 	}
 	for _, required := range []string{"源码用 parameters 筛选该集合", "status='ambiguous'", "不能点击标题", "for (const node of result.nodes)"} {

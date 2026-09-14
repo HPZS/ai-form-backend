@@ -50,14 +50,19 @@ func TestCompileAdapterGatewayRepairReplayAndInvalidFree(t *testing.T) {
 		// ChatMessage 的生产编码器没有自定义解码器，这里直接检查线上的消息文本。
 		var wire struct {
 			Messages []struct {
+				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 			t.Error(err)
 		}
-		if n == 2 && strings.Contains(wire.Messages[len(wire.Messages)-1].Content, "compile-1") {
-			repaired.Store(true)
+		if n == 2 {
+			if len(wire.Messages) != 4 || wire.Messages[2].Role != "assistant" || wire.Messages[2].Content != `{"schemaVersion":1}` || wire.Messages[3].Role != "user" {
+				t.Error("协议修复必须携带上一次原始候选，不能只要求模型凭空重写")
+			} else if strings.Contains(wire.Messages[3].Content, "compile-1") {
+				repaired.Store(true)
+			}
 		}
 		if n == 1 || fail.Load() {
 			chatOK(`{"schemaVersion":1}`)(w, r)

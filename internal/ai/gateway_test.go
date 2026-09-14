@@ -416,6 +416,18 @@ func TestRetryTokensAccumulated(t *testing.T) {
 		if n == 1 {
 			chatOK("这不是 JSON")(w, r) // 第一次废掉,触发同链重试
 		} else {
+			var wire struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+				t.Error(err)
+			}
+			if len(wire.Messages) != 4 || wire.Messages[2].Role != "assistant" || wire.Messages[2].Content != "这不是 JSON" || wire.Messages[3].Role != "user" {
+				t.Error("旧网关的协议修复丢失了上次原始答案")
+			}
 			chatOK(`{"mapping":[{"fieldIndex":0,"column":"姓名"}]}`)(w, r)
 		}
 	}))
