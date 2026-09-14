@@ -31,18 +31,19 @@ type TaskFieldSummary struct {
 }
 type TaskAgentReq struct {
 	Meta
-	RuntimeHandoff *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
-	SchemaVersion  string                 `json:"schemaVersion"`
-	RunID          string                 `json:"runId"`
-	SnapshotID     string                 `json:"snapshotId"`
-	ContextDigest  string                 `json:"contextDigest"`
-	RowIndex       int                    `json:"rowIndex"`
-	CallIndex      int                    `json:"callIndex"`
-	RemainingCalls int                    `json:"remainingCalls"`
-	Intent         string                 `json:"intent"`
-	SaveMode       string                 `json:"saveMode"`
-	Fields         []TaskFieldSummary     `json:"fields"`
-	Sources        []struct {
+	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
+	RuntimeHandoff           *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
+	SchemaVersion            string                 `json:"schemaVersion"`
+	RunID                    string                 `json:"runId"`
+	SnapshotID               string                 `json:"snapshotId"`
+	ContextDigest            string                 `json:"contextDigest"`
+	RowIndex                 int                    `json:"rowIndex"`
+	CallIndex                int                    `json:"callIndex"`
+	RemainingCalls           int                    `json:"remainingCalls"`
+	Intent                   string                 `json:"intent"`
+	SaveMode                 string                 `json:"saveMode"`
+	Fields                   []TaskFieldSummary     `json:"fields"`
+	Sources                  []struct {
 		Name  string `json:"name"`
 		Count int    `json:"count"`
 	} `json:"sources"`
@@ -154,6 +155,10 @@ func validateTaskAgentOutput(r *TaskAgentReq, content string) (TaskAgentOutput, 
 		return out, fmt.Errorf("非求助状态夹带问题")
 	}
 	switch out.Status {
+	case "need-adapter":
+		if !r.AdapterLearningAvailable || r.RuntimeHandoff != nil {
+			return out, fmt.Errorf("当前任务未开放首次程序学习")
+		}
 	case "tool":
 		if out.Tool == nil || !taskCallID.MatchString(out.Tool.CallID) || out.Tool.Arguments == nil {
 			return out, fmt.Errorf("缺少合法工具调用")

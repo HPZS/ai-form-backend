@@ -38,12 +38,34 @@ func TestTaskAgentDecisionBindingAndTools(t *testing.T) {
 	}
 }
 
+func TestTaskAgentLearningRequiresExplicitCapability(t *testing.T) {
+	store, err := LoadPrompts("../../prompts/private", []string{"agent_task_step"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{false, true} {
+		req := &TaskAgentReq{SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", AdapterLearningAvailable: enabled}
+		_, prompt, _, err := store.Render("agent_task_step", req)
+		if err != nil || strings.Contains(prompt, "need-adapter") != enabled {
+			t.Fatalf("旧客户端不得看到新增学习状态: enabled=%v err=%v", enabled, err)
+		}
+		value := `{"schemaVersion":"v1","runId":"run","snapshotId":"snapshot","contextDigest":"digest","status":"need-adapter","explanation":"当前有重复分支流程，申请学习局部程序"}`
+		if _, err := validateTaskAgentOutput(req, value); (err == nil) != enabled {
+			t.Fatalf("enabled=%v err=%v", enabled, err)
+		}
+		req.RuntimeHandoff = &AdapterHandoffContext{}
+		if _, err := validateTaskAgentOutput(req, value); err == nil {
+			t.Fatal("在途程序移交不能启动另一首次学习")
+		}
+	}
+}
+
 func TestTaskAgentPromptAndRequestLimits(t *testing.T) {
 	store, err := LoadPrompts("../../prompts/private", []string{"agent_task_step"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, user, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v4" || !strings.Contains(user, "read_source") || !strings.Contains(user, "advance_form") {
+	if _, user, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v5" || !strings.Contains(user, "read_source") || !strings.Contains(user, "advance_form") {
 		t.Fatalf("prompt: %s %v", version, err)
 	}
 	req := &TaskAgentReq{Meta: Meta{RequestID: "00000000-0000-4000-8000-000000000001", TaskID: "task"}, SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", CallIndex: 1, SaveMode: "automatic", Tools: []TaskToolDescription{{Name: "read", Effect: "read"}}}
