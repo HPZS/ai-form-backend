@@ -229,6 +229,9 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 			return out, fmt.Errorf("%s 缺少合法 targetNodeId", action.Op)
 		}
 	case "replace-text":
+		if inStrings(req.ReadOnlyNodeIDs, action.TargetNodeID) {
+			return out, fmt.Errorf("replace-text 不得绕过 readonly，请操作当前已打开控件或请求必要的局部学习")
+		}
 		if !projected(action.TargetNodeID) || action.ValueRef == "" || !req.hasValueRef(action.ValueRef) {
 			return out, fmt.Errorf("replace-text 引用了未授权目标或值句柄")
 		}
@@ -454,6 +457,9 @@ func validateAgentRowPlanOutput(req *AgentRowPlanReq, content string) (agentRowP
 		switch action.Op {
 		case "click", "focus":
 		case "replace-text":
+			if inStrings(req.ReadOnlyNodeIDs, action.TargetNodeID) {
+				return out, fmt.Errorf("replace-text 不得绕过 readonly，请安排打开控件或暂缓该目标")
+			}
 			if action.ValueBinding != "goal-value" {
 				return out, fmt.Errorf("replace-text 必须使用 goal-value 本地绑定")
 			}

@@ -185,3 +185,19 @@ func validateExpectedEvidence(effects []map[string]any, projected []string) erro
 	}
 	return nil
 }
+
+func validateReadOnlyNodeIDs(ids, projected []string) error {
+	if err := checkStringList("readOnlyNodeIds", ids, 20000, 100); err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(projected))
+	for _, id := range projected {
+		known[id] = true
+	}
+	for _, id := range ids {
+		if !known[id] {
+			return fmt.Errorf("readOnlyNodeIds 引用了未投影节点")
+		}
+	}
+	return nil
+}

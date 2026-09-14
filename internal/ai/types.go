@@ -296,6 +296,7 @@ type GoalValueObservation struct {
 // ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
 type AgentStepReq struct {
 	Meta
+	ReadOnlyNodeIDs          []string               `json:"readOnlyNodeIds,omitempty"`
 	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
 	AdapterLearningRecords   int                    `json:"adapterLearningRecords,omitempty"`
 	RuntimeHandoff           *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
@@ -343,6 +344,7 @@ type AgentRowPlanningGoalReq struct {
 
 type AgentRowPlanReq struct {
 	Meta
+	ReadOnlyNodeIDs    []string                  `json:"readOnlyNodeIds,omitempty"`
 	SnapshotID         string                    `json:"snapshotId"`
 	ContextDigest      string                    `json:"contextDigest"`
 	RowPlanID          string                    `json:"rowPlanId"`
@@ -506,6 +508,9 @@ func checkStringList(name string, values []string, max, maxLen int) error {
 }
 
 func (r *AgentStepReq) Validate() error {
+	if err := validateReadOnlyNodeIDs(r.ReadOnlyNodeIDs, r.ProjectedNodeIDs); err != nil {
+		return err
+	}
 	if r.AdapterLearningRecords < 0 || r.AdapterLearningRecords > 1000000 || r.AdapterLearningRecords > 0 && !r.AdapterLearningAvailable {
 		return fmt.Errorf("程序学习记录数或能力上下文无效")
 	}
@@ -586,6 +591,9 @@ func (r *AgentStepReq) Validate() error {
 }
 
 func (r *AgentRowPlanReq) Validate() error {
+	if err := validateReadOnlyNodeIDs(r.ReadOnlyNodeIDs, r.ProjectedNodeIDs); err != nil {
+		return err
+	}
 	if err := r.validateMeta(); err != nil {
 		return err
 	}

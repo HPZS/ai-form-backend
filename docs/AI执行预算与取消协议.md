@@ -40,12 +40,14 @@
 
 ## 迁移、验证与发布
 
-字段单步请求新增可选 `adapterLearningAvailable`。只有宿主明确开放、目标为 `set-field-value` 且没有程序接管续态时，`agent_step` 才能返回 `need-adapter`；该状态只请求局部候选学习，不夹带网页动作或完成结论。正式提示词更新为 v8，按请求能力条件展示此选项，旧客户端不接收新状态。编译仍经过原 `compile_adapter` 网关、计费及预算；此变更不使每个字段必须先学习。
+字段单步请求新增可选 `adapterLearningAvailable`。只有宿主明确开放、目标为 `set-field-value` 且没有程序接管续态时，`agent_step` 才能返回 `need-adapter`；该状态只请求局部候选学习，不夹带网页动作或完成结论。正式提示词当前为 v10，按请求能力条件展示此选项，旧客户端不接收新状态。编译仍经过原 `compile_adapter` 网关、计费及预算；此变更不使每个字段必须先学习。
+
+单步及行计划请求可带 `readOnlyNodeIds`，必须属于本次已投影节点。插件从当前原生控件事实生成集合，不解析页面标签中的 readonly 字样；后端拒绝对这些节点生成 replace-text，仍允许打开控件。错误动作进入原请求既有的有界协议修复，不能开独立重试额度。插件在实际分发前继续检查实时 DOM；旧请求没有该可选集合时继续依赖原客户端保护，不把服务端候选当作操作授权。
 
 新增 `ai_request_cancellations`、`ai_execution_budgets` 两张表；`ai_requests` 增加 `work_id`、`recovery_group_id`、`failure_code`。预算表保留恢复组累计和每次扩额身份，逐次 usage 保留用量完整性与预留信息。历史请求、结果、单价、预占、流水和订阅不重写。
 
 已通过 `go test ./...`、`go build ./...`，并在独立本机 PostgreSQL 16 库运行 `TestPostgresExecutionBudgetMigrationAndConcurrency`：重复迁移保留既有请求与自定义价格，最后一次额度只允许一个并发请求调用上游。测试 schema `execution_1789357451264109600` 保留于专用 `aiform_execution_test` 数据库；它不是生产迁移证明。
 
-部署仍按 [部署指南](部署指南.md)：验收后在开发机构建并推送固定版本镜像，服务器仅 pull。部署前备份数据库、环境、Compose、提示词和旧镜像；保存原账户、价格、请求与流水的历史范围摘要。部署后检查服务健康、API22/执行1/计费2、原范围数据摘要、旧请求恢复和仅程序策略，最后记录实际镜像 digest。本轮已修改 `agent_step.yaml` 至 v8，发布时必须同步挂载提示词并核对摘要，不能只更换应用镜像。
+部署仍按 [部署指南](部署指南.md)：验收后在开发机构建并推送固定版本镜像，服务器仅 pull。部署前备份数据库、环境、Compose、提示词和旧镜像；保存原账户、价格、请求与流水的历史范围摘要。部署后检查服务健康、API22/执行1/计费2、原范围数据摘要、旧请求恢复和仅程序策略，最后记录实际镜像 digest。当前相关提示词为 `agent_step` v10、`agent_row_plan` v3、`agent_task_step` v6、`compile_adapter` v4，发布时必须同步挂载提示词并核对摘要，不能只更换应用镜像。
 
 未取得完整冷启动、换值零 AI、局部修复和取消竞态证据前，不将本协议文档标为全部优化验收完成。
