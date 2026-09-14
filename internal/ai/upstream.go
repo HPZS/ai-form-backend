@@ -100,6 +100,9 @@ type AttemptUsage struct {
 	Dispatch               string `json:"dispatch,omitempty"`
 	ReservedTokens         int64  `json:"reservedTokens,omitempty"`
 	ReservedWaitMs         int64  `json:"reservedWaitMs,omitempty"`
+	ThinkingMode           string `json:"thinkingMode,omitempty"`
+	TokenLimitParameter    string `json:"tokenLimitParameter,omitempty"`
+	MaxOutputTokens        int    `json:"maxOutputTokens,omitempty"`
 }
 type usageObserverKey struct{}
 
@@ -263,6 +266,9 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 	var errs []string
 	var causes []error
 	for _, up := range ups {
+		if err := up.ValidateGenerationOptions(); err != nil {
+			return nil, err
+		}
 		if err := checkDispatchContext(ctx); err != nil {
 			return nil, err
 		}
@@ -286,6 +292,10 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 		}
 		{
 			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown", Dispatch: dispatchUnknown}
+			item.ThinkingMode, item.TokenLimitParameter, item.MaxOutputTokens = up.ThinkingMode, up.TokenLimitParameter, params.MaxTokens
+			if item.TokenLimitParameter == "" {
+				item.TokenLimitParameter = "max_tokens"
+			}
 			if res != nil {
 				item.Model = res.Model
 				item.InputTokens = res.InputTokens
@@ -330,10 +340,12 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Model               string        `json:"model"`
+	Messages            []ChatMessage `json:"messages"`
+	Temperature         float64       `json:"temperature"`
+	MaxTokens           int           `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+	EnableThinking      *bool         `json:"enable_thinking,omitempty"`
 }
 
 type chatResponse struct {
@@ -387,12 +399,23 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 			result.UsageKnown = true
 		}
 	}()
-	body, err := json.Marshal(chatRequest{
+	if err := up.ValidateGenerationOptions(); err != nil {
+		return nil, err
+	}
+	payload := chatRequest{
 		Model:       params.Model,
 		Messages:    messages,
 		Temperature: params.Temperature,
 		MaxTokens:   params.MaxTokens,
-	})
+	}
+	if up.TokenLimitParameter == "max_completion_tokens" {
+		payload.MaxTokens, payload.MaxCompletionTokens = 0, params.MaxTokens
+	}
+	if up.ThinkingMode != "" {
+		enabled := up.ThinkingMode == "enabled"
+		payload.EnableThinking = &enabled
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}

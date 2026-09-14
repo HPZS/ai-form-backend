@@ -1033,17 +1033,31 @@ func (s *Server) adminListUpstreams(c *gin.Context) {
 		out = append(out, gin.H{
 			"id": u.ID, "name": u.Name, "baseUrl": u.BaseURL,
 			"apiKeyMasked": maskKey(u.APIKey), "enabled": u.Enabled, "sortOrder": u.SortOrder,
+			"thinkingMode": u.ThinkingMode, "tokenLimitParameter": u.TokenLimitParameter,
 		})
 	}
 	c.JSON(200, gin.H{"upstreams": out})
 }
 
 type upstreamReq struct {
-	Name      string `json:"name"`
-	BaseURL   string `json:"baseUrl"`
-	APIKey    string `json:"apiKey"` // 更新时留空 = 不改密钥
-	Enabled   *bool  `json:"enabled"`
-	SortOrder *int   `json:"sortOrder"`
+	Name                string  `json:"name"`
+	BaseURL             string  `json:"baseUrl"`
+	APIKey              string  `json:"apiKey"` // 更新时留空 = 不改密钥
+	Enabled             *bool   `json:"enabled"`
+	SortOrder           *int    `json:"sortOrder"`
+	ThinkingMode        *string `json:"thinkingMode"`
+	TokenLimitParameter *string `json:"tokenLimitParameter"`
+}
+
+func (req upstreamReq) validateGenerationOptions() error {
+	u := model.AIUpstream{}
+	if req.ThinkingMode != nil {
+		u.ThinkingMode = *req.ThinkingMode
+	}
+	if req.TokenLimitParameter != nil {
+		u.TokenLimitParameter = *req.TokenLimitParameter
+	}
+	return u.ValidateGenerationOptions()
 }
 
 func (s *Server) adminCreateUpstream(c *gin.Context) {
@@ -1057,6 +1071,16 @@ func (s *Server) adminCreateUpstream(c *gin.Context) {
 		return
 	}
 	u := model.AIUpstream{Name: req.Name, BaseURL: strings.TrimRight(req.BaseURL, "/"), APIKey: req.APIKey, Enabled: true}
+	if err := req.validateGenerationOptions(); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": err.Error()})
+		return
+	}
+	if req.ThinkingMode != nil {
+		u.ThinkingMode = *req.ThinkingMode
+	}
+	if req.TokenLimitParameter != nil {
+		u.TokenLimitParameter = *req.TokenLimitParameter
+	}
 	if req.Enabled != nil {
 		u.Enabled = *req.Enabled
 	}
@@ -1077,6 +1101,16 @@ func (s *Server) adminUpdateUpstream(c *gin.Context) {
 		return
 	}
 	updates := map[string]any{}
+	if err := req.validateGenerationOptions(); err != nil {
+		c.JSON(400, gin.H{"error": "BAD_REQUEST", "message": err.Error()})
+		return
+	}
+	if req.ThinkingMode != nil {
+		updates["thinking_mode"] = *req.ThinkingMode
+	}
+	if req.TokenLimitParameter != nil {
+		updates["token_limit_parameter"] = *req.TokenLimitParameter
+	}
 	if req.Name != "" {
 		updates["name"] = req.Name
 	}

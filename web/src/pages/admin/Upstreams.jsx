@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { get, post, put, del } from '../../api.js';
-import { Card, Table, Button, Input, NumberInput, Switch, Confirm, toast } from '../../ui';
+import { Card, Table, Button, Input, NumberInput, Select, Switch, Confirm, toast } from '../../ui';
 
 export default function Upstreams() {
   const [rows, setRows] = useState([]);
@@ -25,6 +25,7 @@ export default function Upstreams() {
       await put('/v1/admin/upstreams/' + r.id, {
         name: r.name, baseUrl: r.baseUrl, apiKey: r.newKey,
         sortOrder: r.sortOrder, enabled: r.enabled,
+        thinkingMode: r.thinkingMode, tokenLimitParameter: r.tokenLimitParameter,
       });
       toast.success('已保存,即时生效');
       load();
@@ -53,6 +54,14 @@ export default function Upstreams() {
     { title: '密钥(留空不改)', key: 'newKey', render: (r) => <Input size="sm" mono type="password" autoComplete="new-password" value={r.newKey} placeholder={r.apiKeyMasked} onChange={(x) => patch(r.id, 'newKey', x)} style={{ width: 160 }} /> },
     { title: '优先级', key: 'sortOrder', width: 90, render: (r) => <NumberInput size="sm" value={r.sortOrder} onChange={(x) => patch(r.id, 'sortOrder', x ?? 0)} style={{ width: 72 }} /> },
     { title: '启用', key: 'enabled', width: 70, render: (r) => <Switch checked={r.enabled} onChange={(x) => patch(r.id, 'enabled', x)} /> },
+    { title: '生成参数', key: 'generation', render: (r) => <div>
+      <Select size="sm" aria-label="思考模式" value={r.thinkingMode ?? ''} onChange={(x) => patch(r.id, 'thinkingMode', x)} options={[
+        {value:'',label:'思考：上游默认'}, {value:'enabled',label:'思考：明确开启'}, {value:'disabled',label:'思考：明确关闭'},
+      ]} />
+      <Select size="sm" aria-label="输出上限参数" value={r.tokenLimitParameter ?? ''} onChange={(x) => patch(r.id, 'tokenLimitParameter', x)} options={[
+        {value:'',label:'输出上限：默认 max_tokens'}, {value:'max_tokens',label:'输出上限：max_tokens'}, {value:'max_completion_tokens',label:'输出上限：max_completion_tokens'},
+      ]} />
+    </div> },
     {
       title: '', key: 'ops', render: (r) => (
         <div className="actions">
@@ -75,7 +84,7 @@ export default function Upstreams() {
           <Button size="sm" variant="primary" icon={<Plus />} loading={creating} onClick={create} disabled={!draft.name || !draft.baseUrl || !draft.apiKey}>新增上游</Button>
         </>
       }
-      note="密钥修改即时生效,无需重启;所有上游统一 OpenAI 格式,模型名在「能力配置」里统一设置。">
+      note="配置保存后即时生效，模型名在「能力配置」设置。思考开关使用 enable_thinking；输出上限参数的支持范围与计量口径须核对实际服务，并验证质量后启用。默认配置保留原请求行为。">
       <Table columns={columns} rows={rows} rowKey="id" loading={loading} />
     </Card>
   );

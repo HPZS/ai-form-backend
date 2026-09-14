@@ -135,7 +135,12 @@ func (g *Gateway) withExecutionBudget(ctx context.Context, r *model.AIRequest) c
 				}
 			}
 			index = len(attempts)
-			attempts = append(attempts, AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "started", CostStatus: "unknown", ReservedTokens: reserved, ReservedWaitMs: waitAllowance})
+			limitParameter := up.TokenLimitParameter
+			if limitParameter == "" {
+				limitParameter = "max_tokens"
+			}
+			attempts = append(attempts, AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "started", CostStatus: "unknown", ReservedTokens: reserved, ReservedWaitMs: waitAllowance,
+				ThinkingMode: up.ThinkingMode, TokenLimitParameter: limitParameter, MaxOutputTokens: params.MaxTokens})
 			if err := saveAttemptUsage(tx, &reservedRequest, attempts); err != nil {
 				return err
 			}

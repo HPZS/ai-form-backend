@@ -64,6 +64,8 @@ func TestPostgresExecutionBudgetMigrationAndConcurrency(t *testing.T) {
 		`INSERT INTO ai_requests(user_id,request_id,task_id,capability,policy_version,status,request_digest,response_cache,unit_price,reserved_credits,lease_token,usage_details) VALUES(7,'original-request','original-task','match_columns','per-call-v2','settlement_pending','h1:original','{"mapping":[]}',7,7,'original-lease','[{"status":"responded","inputTokens":12}]')`,
 		`CREATE TABLE capability_prices (id bigserial PRIMARY KEY, capability varchar(64), billing_mode varchar(16), credits bigint, price_version bigint, model varchar(128), enabled boolean)`,
 		`INSERT INTO capability_prices(capability,billing_mode,credits,price_version,model,enabled) VALUES('match_columns','per_call',7,9,'fixture',true)`,
+		`CREATE TABLE ai_upstreams (id bigserial PRIMARY KEY, name varchar(64) NOT NULL, base_url varchar(255) NOT NULL, api_key varchar(255) NOT NULL, enabled boolean NOT NULL DEFAULT true, sort_order bigint NOT NULL DEFAULT 0, created_at timestamptz, updated_at timestamptz)`,
+		`INSERT INTO ai_upstreams(id,name,base_url,api_key,enabled,sort_order) VALUES(7,'legacy-disabled','https://example.test/v1','test-only-key',false,12)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)
@@ -72,6 +74,23 @@ func TestPostgresExecutionBudgetMigrationAndConcurrency(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		if err := model.Migrate(db); err != nil {
 			t.Fatal(err)
+		}
+		var legacy model.AIUpstream
+		if err := db.First(&legacy, 7).Error; err != nil {
+			t.Fatal(err)
+		}
+		if legacy.Name != "legacy-disabled" || legacy.BaseURL != "https://example.test/v1" || legacy.APIKey != "test-only-key" || legacy.Enabled || legacy.SortOrder != 12 {
+			t.Fatal("迁移不能改写旧上游配置")
+		}
+		if i == 0 {
+			if legacy.ThinkingMode != "" || legacy.TokenLimitParameter != "" {
+				t.Fatal("旧上游必须保留原请求行为")
+			}
+			if err := db.Model(&legacy).Updates(map[string]any{"thinking_mode": "disabled", "token_limit_parameter": "max_completion_tokens"}).Error; err != nil {
+				t.Fatal(err)
+			}
+		} else if legacy.ThinkingMode != "disabled" || legacy.TokenLimitParameter != "max_completion_tokens" {
+			t.Fatal("重复迁移不能覆盖显式生成设置")
 		}
 	}
 	var original model.AIRequest

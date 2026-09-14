@@ -68,7 +68,12 @@ func run() error {
 			}
 		}
 	}
-	if err = db.Create(&model.AIUpstream{Name: "billing-eval", BaseURL: endpoint, APIKey: key, Enabled: true}).Error; err != nil {
+	upstream := model.AIUpstream{Name: "billing-eval", BaseURL: endpoint, APIKey: key, Enabled: true,
+		ThinkingMode: os.Getenv("AIFORM_EVAL_THINKING_MODE"), TokenLimitParameter: os.Getenv("AIFORM_EVAL_TOKEN_LIMIT_PARAMETER")}
+	if err = upstream.ValidateGenerationOptions(); err != nil {
+		return err
+	}
+	if err = db.Create(&upstream).Error; err != nil {
 		return err
 	}
 	authSvc := auth.New(db, "local-billing-eval-secret", "local-billing-eval-pepper", nil)

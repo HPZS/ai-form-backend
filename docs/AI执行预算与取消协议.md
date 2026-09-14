@@ -14,6 +14,16 @@
 - `AI_RECOVERY_BUDGET_EXHAUSTED` / `AI_TASK_BUDGET_EXHAUSTED` 为 409，返回 `executionBudget`，包含当前工作、消耗、预留、上限、恢复组及扩额修订号。未分发的首次超额请求也保留可查询预算，模型尝试与消耗为 0。
 - `GET /v1/billing/ai-budgets/:id` 查询当前账户该 workId 的额度。`POST /v1/billing/ai-budgets/:id/extend` 要求 UUID `requestId`、`expectedRevision`、可选 `groupId` 及 `confirmation: "increase-ai-budget"`。每轮增补默认工作额度，指定恢复组加 2 次，最多 3 轮；已有消耗不清零。历史扩额身份保留，重复提交不重复扩额，内容改变返回冲突。
 
+## 上游生成设置与用量明细
+
+管理台上游配置新增 `thinkingMode`（空值沿用服务默认，`enabled`/`disabled` 明确发送 `enable_thinking`）和 `tokenLimitParameter`（空值或 `max_tokens` 沿用原输出参数，`max_completion_tokens` 使用总输出参数）。输出上限数值继续由已有能力配置决定，不允许随意注入其他请求字段。设置对该上游承接的所有能力生效，需核对实际服务及各模型的支持范围、质量与计量结果后启用；不按域名或模型名称自动切换。更新请求省略字段保留旧设置，空字符串明确恢复默认；错误值拒绝保存，运行时错误配置零分发且不切换上游绕过。
+
+`usage_details` 保存实际尝试采用的 `thinkingMode`、`tokenLimitParameter`、`maxOutputTokens`。上游返回有效 `completion_tokens_details.reasoning_tokens` 时保存为可选 `reasoningTokens`，它是输出总量的组成部分，不再次加入预算；缺失或 null 保持未知，明确的 0 保留。非法明细标记 `reasoningTokensInvalid` 并记录技术日志，不因可选明细异常重新调用已有有效回答的请求。不保存内部推理原文。
+
+[阿里云兼容接口文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions) 说明部分模型的 `max_tokens` 只限制最终回答，`max_completion_tokens` 覆盖推理与回答；具体适用模型及误差以实际服务为准。不能将文档对百炼接口的说明直接等同于任意 MAAS 端点保证。参数配置及请求成功本身不证明输出上界得到执行，隔离测试仍须验证使用量、截断和结果质量。
+
+迁移只新增 `ai_upstreams.thinking_mode`、`token_limit_parameter` 两列，旧配置默认空值，不改变密钥、启停、优先级、模型和价格。生产是否启用新设置须在发布记录中分别注明。
+
 ## 显式取消与恢复
 
 `POST /v1/billing/requests/:id/cancel`，body 为原 `taskId`。接口受现有账号鉴权保护，并核对请求/任务归属。

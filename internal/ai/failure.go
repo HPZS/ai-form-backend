@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/HPZS/ai-form-backend/internal/model"
 	"net"
 	"net/http"
 )
@@ -21,6 +22,9 @@ type outputValidationError struct{ error }
 func (e *outputValidationError) Unwrap() error { return e.error }
 
 func aiFailureCode(err error) string {
+	if errors.Is(err, model.ErrUpstreamGenerationOptions) {
+		return "AI_UPSTREAM_CONFIG_INVALID"
+	}
 	if code := executionBudgetCode(err); code != "" {
 		return code
 	}
@@ -54,6 +58,8 @@ func aiFailureCode(err error) string {
 
 func aiFailureResponse(code string) (int, string) {
 	switch code {
+	case "AI_UPSTREAM_CONFIG_INVALID":
+		return http.StatusServiceUnavailable, "AI 上游生成参数配置无效，未分发模型请求；请检查管理台配置"
 	case "AI_RECOVERY_BUDGET_EXHAUSTED":
 		return http.StatusConflict, "同一未解决目标的模型尝试预算已用尽，已停止自动重试并保留进度"
 	case "AI_TASK_BUDGET_EXHAUSTED":

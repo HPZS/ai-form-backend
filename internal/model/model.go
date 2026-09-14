@@ -151,14 +151,16 @@ type CapabilityPrice struct {
 // AIUpstream OpenAI 兼容上游,管理台增删改;故障切换按 sort_order 升序尝试。
 // 模型密钥常换,放库里管理台即改即生效(可随时吊销轮换,风险与 JWT/pepper 不同类)。
 type AIUpstream struct {
-	ID        int64  `gorm:"primaryKey"`
-	Name      string `gorm:"size:64;not null"`
-	BaseURL   string `gorm:"size:255;not null"`
-	APIKey    string `gorm:"size:255;not null"`
-	Enabled   bool   `gorm:"not null;default:true"`
-	SortOrder int    `gorm:"not null;default:0"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                  int64  `gorm:"primaryKey"`
+	Name                string `gorm:"size:64;not null"`
+	BaseURL             string `gorm:"size:255;not null"`
+	APIKey              string `gorm:"size:255;not null"`
+	Enabled             bool   `gorm:"not null;default:true"`
+	SortOrder           int    `gorm:"not null;default:0"`
+	ThinkingMode        string `gorm:"size:16;not null;default:''"`
+	TokenLimitParameter string `gorm:"size:32;not null;default:''"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // BillingGroupCharge 计费组防重锚点:一个计费组至多收一次费。
