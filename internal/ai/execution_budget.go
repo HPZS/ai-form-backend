@@ -181,6 +181,10 @@ func (g *Gateway) withExecutionBudget(ctx context.Context, r *model.AIRequest) c
 				budget.KnownTokens += known
 				budget.ReservedWaitMs -= waitAllowance
 				budget.WaitMs += item.DurationMs
+				if item.Dispatch == dispatchNotSent {
+					budget.Attempts--
+					budget.Groups[group]--
+				}
 				if item.UsageKnown {
 					budget.ReservedTokens -= reserved
 				} else {

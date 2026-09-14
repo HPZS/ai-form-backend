@@ -10,6 +10,30 @@ import (
 	"testing"
 )
 
+func TestModelCallCountDistinguishesReservationAndDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, details string
+		known         bool
+		count         int
+	}{
+		{"无历史", "", false, 0},
+		{"无尝试", `[]`, true, 0},
+		{"仅预留", `[{"status":"started"}]`, false, 0},
+		{"历史失败缺分发事实", `[{"status":"failed"}]`, false, 0},
+		{"历史响应", `[{"status":"responded"}]`, true, 1},
+		{"确认未发送", `[{"status":"failed","dispatch":"not-dispatched","usageKnown":true}]`, true, 0},
+		{"发送后失败", `[{"status":"failed","dispatch":"dispatched"}]`, true, 1},
+		{"部分发送未知", `[{"status":"responded","dispatch":"dispatched"},{"status":"failed","dispatch":"unknown"}]`, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			count := requestModelCalls(&model.AIRequest{UsageDetails: tc.details})
+			if (count != nil) != tc.known || (count != nil && *count != tc.count) {
+				t.Fatalf("调用数不符合分发事实: count=%v details=%s", count, tc.details)
+			}
+		})
+	}
+}
+
 func TestUsageCompletenessDoesNotInferZeroCost(t *testing.T) {
 	for _, tc := range []struct {
 		details  string

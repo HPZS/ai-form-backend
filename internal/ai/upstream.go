@@ -15,8 +15,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -71,7 +73,14 @@ type CallResult struct {
 	InputTokens  int
 	OutputTokens int
 	UsageKnown   bool
+	Dispatch     string
 }
+
+const (
+	dispatchNotSent = "not-dispatched"
+	dispatchSent    = "dispatched"
+	dispatchUnknown = "unknown"
+)
 
 // AttemptUsage 仅记录技术计量，不保存提示词、模型业务原文或密钥。
 type AttemptUsage struct {
@@ -83,6 +92,7 @@ type AttemptUsage struct {
 	DurationMs     int64  `json:"durationMs"`
 	CostStatus     string `json:"costStatus"`
 	UsageKnown     bool   `json:"usageKnown"`
+	Dispatch       string `json:"dispatch,omitempty"`
 	ReservedTokens int64  `json:"reservedTokens,omitempty"`
 	ReservedWaitMs int64  `json:"reservedWaitMs,omitempty"`
 }
@@ -267,12 +277,13 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 		}
 		res, err := c.callOnce(attemptContext, up, params, messages)
 		{
-			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown"}
+			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown", Dispatch: dispatchUnknown}
 			if res != nil {
 				item.Model = res.Model
 				item.InputTokens = res.InputTokens
 				item.OutputTokens = res.OutputTokens
 				item.UsageKnown = res.UsageKnown
+				item.Dispatch = res.Dispatch
 			}
 			if err == nil {
 				item.Status = "responded"
@@ -289,6 +300,9 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 		if err == nil {
 			c.markOK(up.ID)
 			return res, nil
+		}
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return nil, err
 		}
 		if _, managed := ctx.Value(modelAttemptKey{}).(startModelAttempt); managed && aiFailureCode(err) == "AI_UPSTREAM_AUTH_FAILED" {
 			return nil, err
@@ -326,7 +340,21 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callParams, messages []ChatMessage) (*CallResult, error) {
+func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callParams, messages []ChatMessage) (result *CallResult, resultErr error) {
+	dispatch := dispatchNotSent
+	var wroteRequest atomic.Bool
+	defer func() {
+		if result == nil {
+			result = &CallResult{Upstream: up.Name, Model: params.Model}
+		}
+		if wroteRequest.Load() {
+			dispatch = dispatchSent
+		}
+		result.Dispatch = dispatch
+		if dispatch == dispatchNotSent {
+			result.UsageKnown = true
+		}
+	}()
 	body, err := json.Marshal(chatRequest{
 		Model:       params.Model,
 		Messages:    messages,
@@ -344,7 +372,23 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+up.APIKey)
 
+	// 预留成功后仍可能收到取消。只有尚未进入 HTTP 分发才可确认零调用。
+	if err := checkDispatchContext(ctx); err != nil {
+		return nil, err
+	}
+	req = req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wroteRequest.Store(true)
+			}
+		},
+	}))
+	// 已进入传输但未取得写入或响应证据时，可能部分发送，不能当成免费失败。
+	dispatch = dispatchUnknown
 	resp, err := c.http.Do(req)
+	if resp != nil {
+		dispatch = dispatchSent
+	}
 	if err != nil {
 		return nil, fmt.Errorf("上游 %s 请求失败: %w", up.Name, err)
 	}

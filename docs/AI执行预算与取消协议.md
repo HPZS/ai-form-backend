@@ -1,6 +1,6 @@
 # AI 执行预算与取消协议
 
-2026-09-14，开发中，尚未发布。对应插件 `docs/AI自动适配执行与成本优化方案.md`。本文件描述当前已接入的账号网关协议，完整工作流、BYOK 和最终预算配置的验收仍按插件专项推进。
+2026-09-14，开发中，尚未发布。对应插件 `docs/AI自动适配执行与成本优化方案.md`。本文件描述当前已接入的账号网关协议，完整工作流和最终预算配置的验收仍按插件专项推进。产品只支持账号模式，插件须明确拒绝遗留 BYOK 直连入口，不能留下绕过网关的通道。
 
 `GET /v1/about` 增加 `aiExecutionProtocolVersion: 1`，`apiRevision` 为 22，计费协议仍为 2。新插件在启动模型调用前检查此能力；历史同 ID 请求的摘要与账务规则保留。
 
@@ -9,6 +9,8 @@
 - 公共请求可携带 `workId`（UUID）及 `recoveryGroupId`（最多 128 字符）。缺少 workId 时按 taskId、再按 requestId 归属；不同账户始终隔离。客户端必须保证同一工作不因恢复或子循环而换身份。
 - 每次上游尝试在用户行锁事务内预留次数、token 和等待额度。默认工作上限 32 次、256,000 token、180 秒累计等待；同恢复组包含首次、协议修复、切换上游及外层修复，合计上限 2 次。这些是当前开发验证值，需完整成功样本校准。
 - 未知 usage 保留保守 token 预留，已返回用量核销；不能把错误回执中的 0 解释成无成本。仍记录 `costStatus: unknown`，没有可靠账单时不推算确定金额。
+- 每条 `usage_details` 增加 `dispatch`：`not-dispatched` 表示进入 HTTP 传输前已确认未发送，释放次数、恢复组及 token 预留；`dispatched` 表示取得完整请求写入或上游响应证据；`unknown` 表示进入传输但是否发送未确认，保留额度。预算 `attempts` 包含仍需占额的预留/未知尝试，不是精确的真实调用统计。
+- `modelCalls` 仅在全部逐次分发可确定时返回确切值；未知分发或缺少分发事实的历史失败返回未知。历史 `responded` 可以证明调用，确认未发送计 0；已发送但无 usage 计 1 且 `usageComplete: false`。新增字段位于 JSON 用量记录内，无须重写历史数据。
 - `AI_RECOVERY_BUDGET_EXHAUSTED` / `AI_TASK_BUDGET_EXHAUSTED` 为 409，返回 `executionBudget`，包含当前工作、消耗、预留、上限、恢复组及扩额修订号。未分发的首次超额请求也保留可查询预算，模型尝试与消耗为 0。
 - `GET /v1/billing/ai-budgets/:id` 查询当前账户该 workId 的额度。`POST /v1/billing/ai-budgets/:id/extend` 要求 UUID `requestId`、`expectedRevision`、可选 `groupId` 及 `confirmation: "increase-ai-budget"`。每轮增补默认工作额度，指定恢复组加 2 次，最多 3 轮；已有消耗不清零。历史扩额身份保留，重复提交不重复扩额，内容改变返回冲突。
 

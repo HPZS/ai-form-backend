@@ -3,10 +3,13 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +17,84 @@ import (
 
 	"github.com/HPZS/ai-form-backend/internal/model"
 )
+
+type dispatchFailureTransport struct{ wrote bool }
+
+func (f dispatchFailureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if f.wrote {
+		httptrace.ContextClientTrace(r.Context()).WroteRequest(httptrace.WroteRequestInfo{})
+	}
+	return nil, errors.New("模拟发送结果不明，未取得上游回执")
+}
+
+func TestFailedTransportKeepsReservationWithoutInventingDispatch(t *testing.T) {
+	for _, wrote := range []bool{false, true} {
+		t.Run(fmt.Sprint(wrote), func(t *testing.T) {
+			upstream := httptest.NewServer(chatOK(`{}`))
+			defer upstream.Close()
+			_, db, uid, task, _ := v2Fixture(t, upstream)
+			g := &Gateway{db: db}
+			r := model.AIRequest{UserID: uid, TaskID: task, RequestID: uuid.NewString(), Capability: "match_columns", Status: model.AIReqPending, LeaseToken: uuid.NewString(), UsageDetails: "[]"}
+			if err := db.Create(&r).Error; err != nil {
+				t.Fatal(err)
+			}
+			caller := NewCaller(db)
+			caller.http.Transport = dispatchFailureTransport{wrote: wrote}
+			if _, err := caller.Call(g.withExecutionBudget(context.Background(), &r), "match_columns", nil); err == nil {
+				t.Fatal("传输失败不得返回成功")
+			}
+			var budget model.AIExecutionBudget
+			if err := db.Where("user_id = ? AND work_id = ?", uid, task).First(&budget).Error; err != nil {
+				t.Fatal(err)
+			}
+			if budget.Attempts != 1 || budget.ReservedTokens <= 0 || budget.ReservedWaitMs != 0 || requestUsageComplete(&r) {
+				t.Fatalf("无回执不能释放额度或标为免费: %+v usage=%s", budget, r.UsageDetails)
+			}
+			count := requestModelCalls(&r)
+			if (count != nil) != wrote || (count != nil && *count != 1) {
+				t.Fatalf("仅有完整写入证据才能确认调用: %s", r.UsageDetails)
+			}
+		})
+	}
+}
+
+func TestCancelBetweenReservationAndHTTPDoesNotConsumeAttempt(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		chatOK(`{}`)(w, r)
+	}))
+	defer upstream.Close()
+	_, db, uid, task, _ := v2Fixture(t, upstream)
+	g := &Gateway{db: db}
+	r := model.AIRequest{UserID: uid, TaskID: task, RequestID: uuid.NewString(), Capability: "match_columns", Status: model.AIReqPending, PolicyVersion: "v2", BillingMode: "included", LeaseToken: uuid.NewString(), UsageDetails: "[]"}
+	if err := db.Create(&r).Error; err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := g.withExecutionBudget(parent, &r)
+	start := ctx.Value(modelAttemptKey{}).(startModelAttempt)
+	ctx = context.WithValue(ctx, modelAttemptKey{}, startModelAttempt(func(parent context.Context, up model.AIUpstream, params callParams, messages []ChatMessage) (context.Context, func(AttemptUsage) error, error) {
+		attempt, finish, err := start(parent, up, params, messages)
+		cancel() // 精确覆盖预留已提交、HTTP 尚未分发的窗口。
+		return attempt, finish, err
+	}))
+	_, err := NewCaller(db).Call(ctx, "match_columns", []ChatMessage{{Role: "user", Content: "测试取消"}})
+	if !errors.Is(err, context.Canceled) || calls.Load() != 0 {
+		t.Fatalf("取消后不得发送: calls=%d err=%v", calls.Load(), err)
+	}
+	var budget model.AIExecutionBudget
+	if err := db.Where("user_id = ? AND work_id = ?", uid, task).First(&budget).Error; err != nil {
+		t.Fatal(err)
+	}
+	if budget.Attempts != 0 || budget.Groups[r.RequestID] != 0 || budget.ReservedTokens != 0 || budget.ReservedWaitMs != 0 || budget.KnownTokens != 0 {
+		t.Fatalf("确认未发送必须释放预留: %+v", budget)
+	}
+	if count := requestModelCalls(&r); count == nil || *count != 0 || !requestUsageComplete(&r) {
+		t.Fatalf("未发送不能报告为调用或未知用量: %s", r.UsageDetails)
+	}
+}
 
 func TestV2FailoverAndProtocolRepairShareAttemptLimit(t *testing.T) {
 	var calls atomic.Int32

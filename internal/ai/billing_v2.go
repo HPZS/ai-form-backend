@@ -520,7 +520,23 @@ func requestModelCalls(r *model.AIRequest) *int {
 		log.Printf("[AI-USAGE-READ] request=%s err=%v", r.RequestID, err)
 		return nil
 	}
-	count := len(attempts)
+	count := 0
+	for _, attempt := range attempts {
+		switch attempt.Dispatch {
+		case dispatchNotSent:
+			continue
+		case dispatchSent:
+			count++
+		case "":
+			// 历史成功响应能证明分发，历史失败或在途预留不能证明已发出。
+			if attempt.Status != "responded" {
+				return nil
+			}
+			count++
+		default:
+			return nil
+		}
+	}
 	return &count
 }
 
