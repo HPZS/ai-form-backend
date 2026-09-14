@@ -19,9 +19,15 @@ func (e *upstreamHTTPError) Error() string { return e.detail }
 
 type outputValidationError struct{ error }
 
+// 请求事实已经证明原语不适用，交回已声明支持的宿主；不再消耗一次格式修复。
+var errActionNotApplicable = errors.New("当前只读控件不接受文本写入，动作未交付执行，请按当前能力处理")
+
 func (e *outputValidationError) Unwrap() error { return e.error }
 
 func aiFailureCode(err error) string {
+	if errors.Is(err, errActionNotApplicable) {
+		return "AI_ACTION_NOT_APPLICABLE"
+	}
 	if errors.Is(err, model.ErrUpstreamGenerationOptions) {
 		return "AI_UPSTREAM_CONFIG_INVALID"
 	}
@@ -58,6 +64,8 @@ func aiFailureCode(err error) string {
 
 func aiFailureResponse(code string) (int, string) {
 	switch code {
+	case "AI_ACTION_NOT_APPLICABLE":
+		return http.StatusUnprocessableEntity, "模型提出的写入不适用于当前只读控件，未交付页面执行；已停止原语重试，保留用量供本地恢复"
 	case "AI_UPSTREAM_CONFIG_INVALID":
 		return http.StatusServiceUnavailable, "AI 上游生成参数配置无效，未分发模型请求；请检查管理台配置"
 	case "AI_RECOVERY_BUDGET_EXHAUSTED":

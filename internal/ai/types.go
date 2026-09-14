@@ -296,6 +296,7 @@ type GoalValueObservation struct {
 // ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
 type AgentStepReq struct {
 	Meta
+	ActionRecoveryVersion    int                    `json:"actionRecoveryVersion,omitempty"`
 	ReadOnlyNodeIDs          []string               `json:"readOnlyNodeIds,omitempty"`
 	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
 	AdapterLearningRecords   int                    `json:"adapterLearningRecords,omitempty"`
@@ -508,6 +509,9 @@ func checkStringList(name string, values []string, max, maxLen int) error {
 }
 
 func (r *AgentStepReq) Validate() error {
+	if r.ActionRecoveryVersion != 0 && (r.ActionRecoveryVersion != 1 || !r.AdapterLearningAvailable || r.GoalKind != "set-field-value" || r.RuntimeHandoff != nil) {
+		return fmt.Errorf("动作恢复版本或当前学习能力无效")
+	}
 	if err := validateReadOnlyNodeIDs(r.ReadOnlyNodeIDs, r.ProjectedNodeIDs); err != nil {
 		return err
 	}

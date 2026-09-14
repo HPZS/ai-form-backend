@@ -267,6 +267,9 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 		if err == nil {
 			break
 		}
+		if errors.Is(err, errActionNotApplicable) {
+			break
+		}
 		err = &outputValidationError{err}
 		log.Printf("[AI-V2-INVALID] request=%s attempt=%d reason=%s", r.RequestID, attempt+1, safeValidationReason(err))
 		messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})

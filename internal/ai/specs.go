@@ -229,9 +229,6 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 			return out, fmt.Errorf("%s 缺少合法 targetNodeId", action.Op)
 		}
 	case "replace-text":
-		if inStrings(req.ReadOnlyNodeIDs, action.TargetNodeID) {
-			return out, fmt.Errorf("replace-text 不得绕过 readonly，请操作当前已打开控件或请求必要的局部学习")
-		}
 		if !projected(action.TargetNodeID) || action.ValueRef == "" || !req.hasValueRef(action.ValueRef) {
 			return out, fmt.Errorf("replace-text 引用了未授权目标或值句柄")
 		}
@@ -244,6 +241,12 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 		}
 		if !inStrings(req.AllowedTransforms, transform) {
 			return out, fmt.Errorf("replace-text 使用了未授权转换")
+		}
+		if inStrings(req.ReadOnlyNodeIDs, action.TargetNodeID) {
+			if req.ActionRecoveryVersion == 1 {
+				return out, errActionNotApplicable
+			}
+			return out, fmt.Errorf("replace-text 不得绕过 readonly，请操作当前已打开控件或请求必要的局部学习")
 		}
 	case "press-key":
 		if !inStrings(safeKeys, action.Key) {

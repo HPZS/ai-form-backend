@@ -67,7 +67,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev16: 新增独立的资料图像区域识别与复核契约。
 // rev20: 完整来源、样本行和列统计统一支持 1024 列。
 // rev21: 适配程序编译、模型策略、调用阶段以及稳定用户主体。
-const APIRevision = 22
+// rev23: 字段动作不适用时由声明版本的客户端恢复，保留共享预算及旧客户端行为。
+const APIRevision = 23
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
