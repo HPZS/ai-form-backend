@@ -67,7 +67,7 @@ func TestAdapterSemanticSelectionIsRenderedOnlyForExplicitFieldContract(t *testi
 	req.CallPhase, req.HandoffID = "runtime-handoff", "choose-current"
 	req.RuntimeHandoff = &AdapterHandoffContext{ProgramID: strings.Repeat("a", 64), Revision: strings.Repeat("b", 64), ModuleID: "fill", Goal: "选择满足当前文字沟通需求的服务台", Selection: &AdapterHandoffSelection{CandidateQueryRef: "candidates", ValueQueryRef: "labels", Read: "text"}}
 	_, current, version, err := store.Render("agent_step", req)
-	if err != nil || version != "v10" || !strings.Contains(current, `"semanticSelection":{"handoffId":"choose-current"`) || !strings.Contains(current, req.RuntimeHandoff.Goal) || !strings.Contains(current, `"valueQueryRef":"labels"`) {
+	if err != nil || version != "v11" || !strings.Contains(current, `"semanticSelection":{"handoffId":"choose-current"`) || !strings.Contains(current, req.RuntimeHandoff.Goal) || !strings.Contains(current, `"valueQueryRef":"labels"`) {
 		t.Fatalf("显式选择契约未完整进入正式上下文: version=%s err=%v", version, err)
 	}
 }

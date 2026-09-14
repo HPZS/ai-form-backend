@@ -16,8 +16,8 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染 agent_step 提示词失败: %v", err)
 	}
-	if version != "v10" {
-		t.Fatalf("提示词版本应为 v10，实际 %q", version)
+	if version != "v11" {
+		t.Fatalf("提示词版本应为 v11，实际 %q", version)
 	}
 	for _, want := range []string{`"status":"act"`, `"status":"done"`, `"status":"need-context"`, "未使用字段必须省略"} {
 		if !strings.Contains(user, want) {
@@ -33,9 +33,16 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	req := validAgentReq()
 	req.AdapterLearningAvailable = true
 	req.AdapterLearningRecords = 8
-	_, learningPrompt, _, err := store.Render("agent_step", req)
+	learningSystem, learningPrompt, _, err := store.Render("agent_step", req)
 	if err != nil || !strings.Contains(learningPrompt, `"status":"need-adapter"`) || !strings.Contains(learningPrompt, "尚有 8 条记录") || !strings.Contains(learningPrompt, "完整交互") {
 		t.Fatalf("新客户端必须获得按需学习选项: %v", err)
+	}
+	if !strings.Contains(learningSystem, "完整字段交互") || !strings.Contains(learningSystem, "need-adapter") {
+		t.Fatal("开启学习后 system 也必须允许完整交互决策，不能仍只要求单个动作")
+	}
+	legacySystem, _, _, err := store.Render("agent_step", validAgentReq())
+	if err != nil || strings.Contains(legacySystem, "need-adapter") {
+		t.Fatal("旧客户端的 system 不得开放程序学习")
 	}
 }
 
