@@ -67,13 +67,15 @@ type CallResult struct {
 	Content string
 	// 输出被 maxTokens 截断(finish_reason=length)。JSON 类能力靠解析失败自保,
 	// 纯文本能力没有这道保险——半句话会被当成完整答案填进业务系统,必须显式判无效。
-	Truncated    bool
-	Upstream     string
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	UsageKnown   bool
-	Dispatch     string
+	Truncated              bool
+	Upstream               string
+	Model                  string
+	InputTokens            int
+	OutputTokens           int
+	ReasoningTokens        *int
+	ReasoningTokensInvalid bool
+	UsageKnown             bool
+	Dispatch               string
 }
 
 const (
@@ -84,17 +86,20 @@ const (
 
 // AttemptUsage 仅记录技术计量，不保存提示词、模型业务原文或密钥。
 type AttemptUsage struct {
-	Upstream       string `json:"upstream"`
-	Model          string `json:"model"`
-	Status         string `json:"status"`
-	InputTokens    int    `json:"inputTokens"`
-	OutputTokens   int    `json:"outputTokens"`
-	DurationMs     int64  `json:"durationMs"`
-	CostStatus     string `json:"costStatus"`
-	UsageKnown     bool   `json:"usageKnown"`
-	Dispatch       string `json:"dispatch,omitempty"`
-	ReservedTokens int64  `json:"reservedTokens,omitempty"`
-	ReservedWaitMs int64  `json:"reservedWaitMs,omitempty"`
+	Upstream     string `json:"upstream"`
+	Model        string `json:"model"`
+	Status       string `json:"status"`
+	InputTokens  int    `json:"inputTokens"`
+	OutputTokens int    `json:"outputTokens"`
+	// 推理数是输出总量的明细，不参与再次累计；nil 表示上游没有提供有效明细。
+	ReasoningTokens        *int   `json:"reasoningTokens,omitempty"`
+	ReasoningTokensInvalid bool   `json:"reasoningTokensInvalid,omitempty"`
+	DurationMs             int64  `json:"durationMs"`
+	CostStatus             string `json:"costStatus"`
+	UsageKnown             bool   `json:"usageKnown"`
+	Dispatch               string `json:"dispatch,omitempty"`
+	ReservedTokens         int64  `json:"reservedTokens,omitempty"`
+	ReservedWaitMs         int64  `json:"reservedWaitMs,omitempty"`
 }
 type usageObserverKey struct{}
 
@@ -285,6 +290,8 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 				item.Model = res.Model
 				item.InputTokens = res.InputTokens
 				item.OutputTokens = res.OutputTokens
+				item.ReasoningTokens = res.ReasoningTokens
+				item.ReasoningTokensInvalid = res.ReasoningTokensInvalid
 				item.UsageKnown = res.UsageKnown
 				item.Dispatch = res.Dispatch
 			}
@@ -338,9 +345,31 @@ type chatResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     *int `json:"prompt_tokens"`
-		CompletionTokens *int `json:"completion_tokens"`
+		PromptTokens            *int            `json:"prompt_tokens"`
+		CompletionTokens        *int            `json:"completion_tokens"`
+		CompletionTokensDetails json.RawMessage `json:"completion_tokens_details"`
 	} `json:"usage"`
+}
+
+// 可选明细异常只标记计量缺口，不因它重试一个已有有效总量和回答的付费请求。
+func reasoningUsage(details json.RawMessage, completionTokens *int) (*int, bool) {
+	if len(details) == 0 {
+		return nil, false
+	}
+	var parsed struct {
+		ReasoningTokens *int `json:"reasoning_tokens"`
+	}
+	if err := json.Unmarshal(details, &parsed); err != nil {
+		return nil, true
+	}
+	count := parsed.ReasoningTokens
+	if count == nil {
+		return nil, false
+	}
+	if *count < 0 || completionTokens != nil && *completionTokens >= 0 && *count > *completionTokens {
+		return nil, true
+	}
+	return count, false
 }
 
 func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callParams, messages []ChatMessage) (result *CallResult, resultErr error) {
@@ -408,8 +437,14 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		return nil, fmt.Errorf("上游 %s 响应格式异常: %w", up.Name, err)
 	}
 	inputTokens, outputTokens := 0, 0
+	var reasoningTokens *int
+	reasoningInvalid := false
 	usageKnown := cr.Usage != nil && cr.Usage.PromptTokens != nil && cr.Usage.CompletionTokens != nil && *cr.Usage.PromptTokens >= 0 && *cr.Usage.CompletionTokens >= 0
 	if cr.Usage != nil {
+		reasoningTokens, reasoningInvalid = reasoningUsage(cr.Usage.CompletionTokensDetails, cr.Usage.CompletionTokens)
+		if reasoningInvalid {
+			log.Printf("[AI-USAGE] 上游推理用量明细无效 name=%s model=%s，保留总量并标记明细未知", up.Name, params.Model)
+		}
 		if cr.Usage.PromptTokens != nil && *cr.Usage.PromptTokens >= 0 {
 			inputTokens = *cr.Usage.PromptTokens
 		}
@@ -418,7 +453,7 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		}
 	}
 	if len(cr.Choices) == 0 {
-		return &CallResult{Upstream: up.Name, Model: params.Model, InputTokens: inputTokens, OutputTokens: outputTokens, UsageKnown: usageKnown}, fmt.Errorf("上游 %s 返回空 choices", up.Name)
+		return &CallResult{Upstream: up.Name, Model: params.Model, InputTokens: inputTokens, OutputTokens: outputTokens, ReasoningTokens: reasoningTokens, ReasoningTokensInvalid: reasoningInvalid, UsageKnown: usageKnown}, fmt.Errorf("上游 %s 返回空 choices", up.Name)
 	}
 	// 上游换了模型:JSON 能力的输出质量与计量归因都会跟着变,审计字段记的是"意愿"而非事实
 	if cr.Model != "" && cr.Model != params.Model {
@@ -429,12 +464,14 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		actualModel = params.Model
 	}
 	return &CallResult{
-		Content:      cr.Choices[0].Message.Content,
-		Truncated:    cr.Choices[0].FinishReason == "length",
-		Upstream:     up.Name,
-		Model:        actualModel,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		UsageKnown:   usageKnown,
+		Content:                cr.Choices[0].Message.Content,
+		Truncated:              cr.Choices[0].FinishReason == "length",
+		Upstream:               up.Name,
+		Model:                  actualModel,
+		InputTokens:            inputTokens,
+		OutputTokens:           outputTokens,
+		ReasoningTokens:        reasoningTokens,
+		ReasoningTokensInvalid: reasoningInvalid,
+		UsageKnown:             usageKnown,
 	}, nil
 }
