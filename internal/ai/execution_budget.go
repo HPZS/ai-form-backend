@@ -21,6 +21,11 @@ const ExecutionMaxAttempts = 32
 const ExecutionMaxTokens int64 = 256000
 const ExecutionMaxWaitMs int64 = 180000
 const RecoveryMaxAttempts = 2
+const ExecutionMaxExtensions = 3
+
+func currentExecutionBudgetExtensionOffer() model.AIExecutionBudgetExtensionOffer {
+	return model.AIExecutionBudgetExtensionOffer{Attempts: ExecutionMaxAttempts, Tokens: ExecutionMaxTokens, WaitMs: ExecutionMaxWaitMs, RecoveryAttempts: RecoveryMaxAttempts}
+}
 
 type executionBudgetError struct{ code string }
 
@@ -237,7 +242,13 @@ func executionBudgetCode(err error) string {
 }
 
 func executionBudgetView(b model.AIExecutionBudget) gin.H {
-	return gin.H{"workId": b.WorkID, "attempts": b.Attempts, "knownTokens": b.KnownTokens, "reservedTokens": b.ReservedTokens, "waitMs": b.WaitMs, "reservedWaitMs": b.ReservedWaitMs, "maxAttempts": b.MaxAttempts, "maxTokens": b.MaxTokens, "maxWaitMs": b.MaxWaitMs, "revision": b.Extensions}
+	remaining := max(0, ExecutionMaxExtensions-b.Extensions)
+	var offer *model.AIExecutionBudgetExtensionOffer
+	if remaining > 0 {
+		policy := currentExecutionBudgetExtensionOffer()
+		offer = &policy
+	}
+	return gin.H{"workId": b.WorkID, "attempts": b.Attempts, "knownTokens": b.KnownTokens, "reservedTokens": b.ReservedTokens, "waitMs": b.WaitMs, "reservedWaitMs": b.ReservedWaitMs, "maxAttempts": b.MaxAttempts, "maxTokens": b.MaxTokens, "maxWaitMs": b.MaxWaitMs, "revision": b.Extensions, "remainingExtensions": remaining, "extensionOffer": offer}
 }
 
 func (g *Gateway) QueryExecutionBudget(c *gin.Context) {
@@ -252,10 +263,11 @@ func (g *Gateway) QueryExecutionBudget(c *gin.Context) {
 // 只有明确的扩额请求能增加预算；重复点击或丢失回执按同一扩额身份重放。
 func (g *Gateway) ExtendExecutionBudget(c *gin.Context) {
 	var input struct {
-		RequestID        string `json:"requestId"`
-		ExpectedRevision int    `json:"expectedRevision"`
-		GroupID          string `json:"groupId"`
-		Confirmation     string `json:"confirmation"`
+		RequestID        string                                 `json:"requestId"`
+		ExpectedRevision int                                    `json:"expectedRevision"`
+		GroupID          string                                 `json:"groupId"`
+		Confirmation     string                                 `json:"confirmation"`
+		ExpectedOffer    *model.AIExecutionBudgetExtensionOffer `json:"expectedOffer"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Confirmation != "increase-ai-budget" || len(input.GroupID) > 128 {
 		apiErr(c, 400, "INVALID_REQUEST", "需要明确增加 AI 预算的确认及原预算版本")
@@ -278,13 +290,21 @@ func (g *Gateway) ExtendExecutionBudget(c *gin.Context) {
 			if original.ExpectedRevision != input.ExpectedRevision || original.GroupID != input.GroupID {
 				return credits.ErrConflict
 			}
+			if (original.ExpectedOffer == nil) != (input.ExpectedOffer == nil) ||
+				original.ExpectedOffer != nil && *original.ExpectedOffer != *input.ExpectedOffer {
+				return credits.ErrConflict
+			}
 			return nil
 		}
 		if budget.Extensions != input.ExpectedRevision {
 			return credits.ErrConflict
 		}
-		if budget.Extensions >= 3 {
+		if budget.Extensions >= ExecutionMaxExtensions {
 			return &executionBudgetError{"AI_TASK_BUDGET_EXHAUSTED"}
+		}
+		offer := currentExecutionBudgetExtensionOffer()
+		if input.ExpectedOffer != nil && *input.ExpectedOffer != offer {
+			return credits.ErrConflict
 		}
 		if input.GroupID != "" {
 			if _, exists := budget.Groups[input.GroupID]; !exists {
@@ -293,16 +313,16 @@ func (g *Gateway) ExtendExecutionBudget(c *gin.Context) {
 			if budget.GroupExtra == nil {
 				budget.GroupExtra = map[string]int{}
 			}
-			budget.GroupExtra[input.GroupID] += RecoveryMaxAttempts
+			budget.GroupExtra[input.GroupID] += offer.RecoveryAttempts
 		}
 		budget.Extensions++
 		if budget.ExtensionRequests == nil {
 			budget.ExtensionRequests = map[string]model.AIExecutionBudgetExtension{}
 		}
-		budget.ExtensionRequests[input.RequestID] = model.AIExecutionBudgetExtension{ExpectedRevision: input.ExpectedRevision, GroupID: input.GroupID}
-		budget.MaxAttempts += ExecutionMaxAttempts
-		budget.MaxTokens += ExecutionMaxTokens
-		budget.MaxWaitMs += ExecutionMaxWaitMs
+		budget.ExtensionRequests[input.RequestID] = model.AIExecutionBudgetExtension{ExpectedRevision: input.ExpectedRevision, GroupID: input.GroupID, ExpectedOffer: input.ExpectedOffer}
+		budget.MaxAttempts += offer.Attempts
+		budget.MaxTokens += offer.Tokens
+		budget.MaxWaitMs += offer.WaitMs
 		return tx.Save(&budget).Error
 	})
 	if err != nil {

@@ -256,6 +256,82 @@ func TestExecutionBudgetExtensionRetainsEveryConfirmationAndCounters(t *testing.
 	}
 }
 
+func TestExecutionBudgetAdvertisesAndEnforcesExtensionOffer(t *testing.T) {
+	upstream := httptest.NewServer(chatOK(`{}`))
+	defer upstream.Close()
+	router, db, uid, task, _ := v2Fixture(t, upstream)
+	g := &Gateway{db: db}
+	router.GET("/budgets/:id", func(c *gin.Context) { c.Set("userID", uid) }, g.QueryExecutionBudget)
+	router.POST("/budgets/:id/extend", func(c *gin.Context) { c.Set("userID", uid) }, g.ExtendExecutionBudget)
+	budget := model.AIExecutionBudget{UserID: uid, WorkID: task, Attempts: 7, KnownTokens: 100, ReservedTokens: 200, MaxAttempts: ExecutionMaxAttempts, MaxTokens: ExecutionMaxTokens, MaxWaitMs: ExecutionMaxWaitMs}
+	if err := db.Create(&budget).Error; err != nil {
+		t.Fatal(err)
+	}
+	query := func() map[string]any {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("GET", "/budgets/"+task, nil))
+		var body map[string]any
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+			t.Fatal(w.Body.String())
+		}
+		return body
+	}
+	post := func(id string, revision int, offer any) *httptest.ResponseRecorder {
+		raw, err := json.Marshal(map[string]any{"requestId": id, "expectedRevision": revision, "expectedOffer": offer, "confirmation": "increase-ai-budget"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("POST", "/budgets/"+task+"/extend", strings.NewReader(string(raw))))
+		return w
+	}
+	first := uuid.NewString()
+	var originalOffer any
+	for revision := 0; revision < 3; revision++ {
+		view := query()
+		offer, ok := view["extensionOffer"].(map[string]any)
+		if !ok || view["remainingExtensions"] != float64(3-revision) {
+			t.Fatalf("没有实际可追加政策: %+v", view)
+		}
+		if offer["attempts"] != float64(ExecutionMaxAttempts) || offer["tokens"] != float64(ExecutionMaxTokens) || offer["waitMs"] != float64(ExecutionMaxWaitMs) || offer["recoveryAttempts"] != float64(RecoveryMaxAttempts) {
+			t.Fatalf("展示政策与实际增量不一致: %+v", offer)
+		}
+		if revision == 0 {
+			originalOffer = offer
+			stale := map[string]any{"attempts": 1, "tokens": 1, "waitMs": 1, "recoveryAttempts": 1}
+			if w := post(uuid.NewString(), revision, stale); w.Code != 409 {
+				t.Fatalf("不同于用户看到的额度不能自动增加: %s", w.Body.String())
+			}
+		}
+		id := uuid.NewString()
+		if revision == 0 {
+			id = first
+		}
+		if w := post(id, revision, offer); w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+	}
+	view := query()
+	if view["remainingExtensions"] != float64(0) || view["extensionOffer"] != nil {
+		t.Fatalf("达到上限后不能继续提供追加选项: %+v", view)
+	}
+	if w := post(uuid.NewString(), 3, originalOffer); w.Code != 409 {
+		t.Fatalf("第四次追加必须停止: %s", w.Body.String())
+	}
+	if w := post(first, 0, originalOffer); w.Code != 200 {
+		t.Fatalf("原确认查询不得因后来到达上限失败: %s", w.Body.String())
+	}
+	if w := post(first, 0, nil); w.Code != 409 {
+		t.Fatalf("原确认的政策不能在重放时被删掉: %s", w.Body.String())
+	}
+	if err := db.First(&budget, budget.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if budget.Extensions != 3 || budget.MaxAttempts != ExecutionMaxAttempts*4 || budget.Attempts != 7 || budget.KnownTokens != 100 || budget.ReservedTokens != 200 {
+		t.Fatalf("额度或累计消耗被错误修改: %+v", budget)
+	}
+}
+
 type budgetDeadlineTransport struct{ cancel context.CancelFunc }
 
 func (f budgetDeadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {

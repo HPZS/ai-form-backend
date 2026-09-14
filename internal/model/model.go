@@ -294,8 +294,16 @@ type AIRequest struct {
 
 // 同一工作在所有能力/恢复请求之间共享执行预算，与积分授权分开。
 type AIExecutionBudgetExtension struct {
-	ExpectedRevision int    `json:"expectedRevision"`
-	GroupID          string `json:"groupId"`
+	ExpectedRevision int                              `json:"expectedRevision"`
+	GroupID          string                           `json:"groupId"`
+	ExpectedOffer    *AIExecutionBudgetExtensionOffer `json:"expectedOffer,omitempty"`
+}
+
+type AIExecutionBudgetExtensionOffer struct {
+	Attempts         int   `json:"attempts"`
+	Tokens           int64 `json:"tokens"`
+	WaitMs           int64 `json:"waitMs"`
+	RecoveryAttempts int   `json:"recoveryAttempts"`
 }
 
 type AIExecutionBudget struct {

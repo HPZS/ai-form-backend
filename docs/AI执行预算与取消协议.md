@@ -14,6 +14,10 @@
 - `AI_RECOVERY_BUDGET_EXHAUSTED` / `AI_TASK_BUDGET_EXHAUSTED` 为 409，返回 `executionBudget`，包含当前工作、消耗、预留、上限、恢复组及扩额修订号。未分发的首次超额请求也保留可查询预算，模型尝试与消耗为 0。
 - `GET /v1/billing/ai-budgets/:id` 查询当前账户该 workId 的额度。`POST /v1/billing/ai-budgets/:id/extend` 要求 UUID `requestId`、`expectedRevision`、可选 `groupId` 及 `confirmation: "increase-ai-budget"`。每轮增补默认工作额度，指定恢复组加 2 次，最多 3 轮；已有消耗不清零。历史扩额身份保留，重复提交不重复扩额，内容改变返回冲突。
 
+预算查询、超额回执和扩额成功回执均提供 `remainingExtensions` 与 `extensionOffer`。后者包含实际可增加的 `attempts`、`tokens`、`waitMs`、`recoveryAttempts`；达到上限时为 null。插件按回执展示，不写死额度，不把预算占用 `attempts` 宣称为已发生调用；政策缺失或无效时明确保持暂停，不自动提供追加或连接重试。
+
+新插件确认扩额时携带所展示的 `expectedOffer`。服务端在原扩额事务中核对政策，变化时返回冲突，不按用户未见过的新政策扩额；原确认政策保存在已有扩额 JSON 记录中，同 ID 不能改变或删除。旧客户端省略此字段的既有请求仍兼容，重复提交仍按原身份返回；不新增数据库列、不重写历史确认。
+
 ## 上游生成设置与用量明细
 
 管理台上游配置新增 `thinkingMode`（空值沿用服务默认，`enabled`/`disabled` 明确发送 `enable_thinking`）和 `tokenLimitParameter`（空值或 `max_tokens` 沿用原输出参数，`max_completion_tokens` 使用总输出参数）。输出上限数值继续由已有能力配置决定，不允许随意注入其他请求字段。设置对该上游承接的所有能力生效，需核对实际服务及各模型的支持范围、质量与计量结果后启用；不按域名或模型名称自动切换。更新请求省略字段保留旧设置，空字符串明确恢复默认；错误值拒绝保存，运行时错误配置零分发且不切换上游绕过。
