@@ -296,33 +296,34 @@ type GoalValueObservation struct {
 // ProjectedNodeIDs 是服务端校验模型 nodeId 引用的事实集合，不能从模型输出反推。
 type AgentStepReq struct {
 	Meta
-	RuntimeHandoff     *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
-	ValueObservations  []GoalValueObservation `json:"valueObservations,omitempty"`
-	InteractionVersion int                    `json:"interactionVersion,omitempty"`
-	SourceColumnRef    string                 `json:"sourceColumnRef,omitempty"`
-	ValueSemantics     *GoalValueSemantics    `json:"valueSemantics,omitempty"`
-	AllowedNodeIDs     []string               `json:"allowedNodeIds,omitempty"`
-	ScopeRevision      string                 `json:"scopeRevision,omitempty"`
-	SnapshotID         string                 `json:"snapshotId"`
-	ContextDigest      string                 `json:"contextDigest"`
-	GoalID             string                 `json:"goalId"`
-	GoalKind           string                 `json:"goalKind"`
-	FieldSemanticName  string                 `json:"fieldSemanticName,omitempty"`
-	ValueRef           string                 `json:"valueRef,omitempty"`
-	ValueShape         string                 `json:"valueShape,omitempty"`
-	ValueHint          string                 `json:"valueHint,omitempty"`
-	AllowedTransforms  []string               `json:"allowedTransforms,omitempty"`
-	RiskLimit          string                 `json:"riskLimit"`
-	Projection         string                 `json:"projection"`
-	ProjectedNodeIDs   []string               `json:"projectedNodeIds"`
-	ProjectedRegionIDs []string               `json:"projectedRegionIds"`
-	AllowedRootIDs     []string               `json:"allowedRootIds,omitempty"`
-	ForbiddenNodeIDs   []string               `json:"forbiddenNodeIds,omitempty"`
-	KnownSubmitNodeIDs []string               `json:"knownSubmitNodeIds,omitempty"`
-	Skills             []string               `json:"skills,omitempty"`
-	History            []AgentHistoryItem     `json:"history,omitempty"`
-	CallIndex          int                    `json:"callIndex"`
-	VisualAuthorized   bool                   `json:"visualAuthorized"`
+	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
+	RuntimeHandoff           *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
+	ValueObservations        []GoalValueObservation `json:"valueObservations,omitempty"`
+	InteractionVersion       int                    `json:"interactionVersion,omitempty"`
+	SourceColumnRef          string                 `json:"sourceColumnRef,omitempty"`
+	ValueSemantics           *GoalValueSemantics    `json:"valueSemantics,omitempty"`
+	AllowedNodeIDs           []string               `json:"allowedNodeIds,omitempty"`
+	ScopeRevision            string                 `json:"scopeRevision,omitempty"`
+	SnapshotID               string                 `json:"snapshotId"`
+	ContextDigest            string                 `json:"contextDigest"`
+	GoalID                   string                 `json:"goalId"`
+	GoalKind                 string                 `json:"goalKind"`
+	FieldSemanticName        string                 `json:"fieldSemanticName,omitempty"`
+	ValueRef                 string                 `json:"valueRef,omitempty"`
+	ValueShape               string                 `json:"valueShape,omitempty"`
+	ValueHint                string                 `json:"valueHint,omitempty"`
+	AllowedTransforms        []string               `json:"allowedTransforms,omitempty"`
+	RiskLimit                string                 `json:"riskLimit"`
+	Projection               string                 `json:"projection"`
+	ProjectedNodeIDs         []string               `json:"projectedNodeIds"`
+	ProjectedRegionIDs       []string               `json:"projectedRegionIds"`
+	AllowedRootIDs           []string               `json:"allowedRootIds,omitempty"`
+	ForbiddenNodeIDs         []string               `json:"forbiddenNodeIds,omitempty"`
+	KnownSubmitNodeIDs       []string               `json:"knownSubmitNodeIds,omitempty"`
+	Skills                   []string               `json:"skills,omitempty"`
+	History                  []AgentHistoryItem     `json:"history,omitempty"`
+	CallIndex                int                    `json:"callIndex"`
+	VisualAuthorized         bool                   `json:"visualAuthorized"`
 }
 
 // AgentRowPlanningGoalReq 不携带业务原值或 Vault 句柄；模型只能用 goal-value 占位绑定当前 Goal 的本地值。

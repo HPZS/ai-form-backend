@@ -16,8 +16,8 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染 agent_step 提示词失败: %v", err)
 	}
-	if version != "v7" {
-		t.Fatalf("提示词版本应为 v7，实际 %q", version)
+	if version != "v8" {
+		t.Fatalf("提示词版本应为 v8，实际 %q", version)
 	}
 	for _, want := range []string{`"status":"act"`, `"status":"done"`, `"status":"need-context"`, "未使用字段必须省略"} {
 		if !strings.Contains(user, want) {
@@ -26,6 +26,15 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	}
 	if strings.Contains(user, `"status":"act|done`) || strings.Contains(user, `"..."`) {
 		t.Fatal("提示词仍含会诱导模型原样输出的联合值或省略号占位")
+	}
+	if strings.Contains(user, `"status":"need-adapter"`) {
+		t.Fatal("旧客户端提示词不能要求程序学习")
+	}
+	req := validAgentReq()
+	req.AdapterLearningAvailable = true
+	_, learningPrompt, _, err := store.Render("agent_step", req)
+	if err != nil || !strings.Contains(learningPrompt, `"status":"need-adapter"`) {
+		t.Fatalf("新客户端必须获得按需学习选项: %v", err)
 	}
 }
 
@@ -55,6 +64,29 @@ func validAgentReq() *AgentStepReq {
 		ValueRef: "value:g1:opaque", ValueShape: "date", AllowedTransforms: []string{"identity"},
 		RiskLimit: "L1", Projection: "n1 input readonly\nn2 button 日期", ProjectedNodeIDs: []string{"n1", "n2"},
 		ProjectedRegionIDs: []string{"region:n1"},
+	}
+}
+
+func TestAgentStepLearningRequiresExplicitClientCapability(t *testing.T) {
+	content := `{"schemaVersion":"v1","snapshotId":"s1","contextDigest":"ctx1","goalId":"g1","status":"need-adapter","explanation":"当前重复交互需要局部程序"}`
+	req := validAgentReq()
+	if _, err := validateAgentStepOutput(req, content); err == nil {
+		t.Fatal("旧客户端不得收到程序学习状态")
+	}
+	if err := json.Unmarshal([]byte(`{"adapterLearningAvailable":true}`), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateAgentStepOutput(req, content); err != nil {
+		t.Fatalf("已明确开放的字段学习应合法: %v", err)
+	}
+	for _, extra := range []string{`,"action":{"op":"click","targetNodeId":"n1"}`, `,"contextRequest":{"kind":"expand-nodes","nodeIds":["n1"],"reason":"查看"}`, `,"userRequest":"请配置脚本"`, `,"expectedEvidence":[{"kind":"state-change"}]`} {
+		if _, err := validateAgentStepOutput(req, strings.TrimSuffix(content, "}")+extra+"}"); err == nil {
+			t.Fatalf("学习请求不得夹带其他动作或结论: %s", extra)
+		}
+	}
+	req.GoalKind = "open-form"
+	if _, err := validateAgentStepOutput(req, content); err == nil {
+		t.Fatal("字段学习不能扩大为整表或其他目标")
 	}
 }
 

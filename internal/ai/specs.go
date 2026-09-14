@@ -113,6 +113,14 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 		return out, fmt.Errorf("AgentStep 缺少 explanation")
 	}
 	switch out.Status {
+	case "need-adapter":
+		if !req.AdapterLearningAvailable || req.GoalKind != "set-field-value" || req.RuntimeHandoff != nil {
+			return out, fmt.Errorf("当前目标未开放字段程序学习")
+		}
+		if strings.TrimSpace(out.Explanation) == "" || len(out.Action) != 0 || len(out.ContextRequest) != 0 || len(out.SemanticSelection) != 0 || len(out.ExpectedEvidence) != 0 || out.UserRequest != "" {
+			return out, fmt.Errorf("程序学习须提供原因且不得夹带动作或其他结论")
+		}
+		return out, nil
 	case "done", "need-context", "need-user", "blocked":
 		if len(out.SemanticSelection) != 0 {
 			return out, fmt.Errorf("非act状态不得声明语义选择")
