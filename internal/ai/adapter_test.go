@@ -102,8 +102,13 @@ func TestCompileAdapterPromptAndRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	system, user, version, err := store.Render("compile_adapter", adapterRequest())
-	if err != nil || version != "v4" || !strings.Contains(system, "function next") || !strings.Contains(system, "candidateQueryRef") || !strings.Contains(system, "satisfied/changed/failed/unknown/ready") || !strings.Contains(user, "compile-1") || !strings.Contains(user, "target") || !strings.Contains(user, "truncated") {
+	if err != nil || version != "v5" || !strings.Contains(system, "function next") || !strings.Contains(system, "candidateQueryRef") || !strings.Contains(system, "satisfied/changed/failed/unknown/ready") || !strings.Contains(user, "compile-1") || !strings.Contains(user, "target") || !strings.Contains(user, "truncated") {
 		t.Fatalf("提示词未绑定正式协议: %s %v", version, err)
+	}
+	for _, required := range []string{"源码用 parameters 筛选该集合", "status='ambiguous'", "不能点击标题", "for (const node of result.nodes)"} {
+		if !strings.Contains(system, required) {
+			t.Fatalf("正式提示词缺少参数化候选选择约束: %s", required)
+		}
 	}
 	if temperature, tokens := CapabilityGenerationParams("compile_adapter"); temperature != 0 || tokens < 12000 {
 		t.Fatalf("适配程序生成参数不完整: %v %v", temperature, tokens)
