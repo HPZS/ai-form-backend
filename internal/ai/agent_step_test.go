@@ -90,6 +90,31 @@ func TestAgentStepLearningRequiresExplicitClientCapability(t *testing.T) {
 	}
 }
 
+func TestAgentStepNodeEffectsRequireProjectedNode(t *testing.T) {
+	for _, version := range []int{0, 1} {
+		req := validAgentReq()
+		req.InteractionVersion = version
+		req.AllowedNodeIDs = []string{"n1", "n2"}
+		for _, kind := range []string{"visible", "hidden", "expanded", "collapsed", "selected", "ready"} {
+			for _, node := range []string{"", "n999", "n2"} {
+				effect := map[string]any{"kind": kind}
+				if node != "" {
+					effect["nodeId"] = node
+				}
+				out := map[string]any{"schemaVersion": "v1", "snapshotId": "s1", "contextDigest": "ctx1", "goalId": "g1", "status": "act", "explanation": "展开级联选项", "action": map[string]any{"op": "click", "targetNodeId": "n1"}, "expectedEvidence": []any{map[string]any{"kind": "state-change"}, effect}}
+				raw, err := json.Marshal(out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = validateAgentStepOutput(req, string(raw))
+				if (err == nil) != (node == "n2") {
+					t.Fatalf("version=%d kind=%s node=%q err=%v", version, kind, node, err)
+				}
+			}
+		}
+	}
+}
+
 func TestAgentStepContextRequestsAreGroundedAndAuthorized(t *testing.T) {
 	req := validAgentReq()
 	prefix := `{"schemaVersion":"v1","snapshotId":"s1","contextDigest":"ctx1","goalId":"g1","status":"need-context","explanation":"补充上下文","contextRequest":`

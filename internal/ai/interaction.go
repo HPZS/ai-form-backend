@@ -132,9 +132,6 @@ func validateInteractionAction(req *AgentStepReq, out agentStepOutput, action ag
 			return fmt.Errorf("valuePart 未绑定当前来源")
 		}
 	}
-	if len(out.ExpectedEvidence) > 8 {
-		return fmt.Errorf("expectedEvidence 数量超限")
-	}
 	if slice := action.ValueSlice; slice != nil {
 		hint := ""
 		if action.ValueRef == "" || !req.hasValueRef(action.ValueRef) || action.ValuePart != "" {
@@ -157,15 +154,28 @@ func validateInteractionAction(req *AgentStepReq, out agentStepOutput, action ag
 	if (action.Op == "click" || action.Op == "select-native") && action.ValueRef != "" && action.ValueSlice == nil {
 		return fmt.Errorf("来源选择句柄必须携带明确切片")
 	}
-	for _, evidence := range out.ExpectedEvidence {
+	return nil
+}
+
+// 与插件的单步/行计划协议一致；具体节点效果不能只有 kind 而没有核验对象。
+func validateExpectedEvidence(effects []map[string]any, projected []string) error {
+	if len(effects) > 8 {
+		return fmt.Errorf("expectedEvidence 数量超限")
+	}
+	for _, evidence := range effects {
 		kind, _ := evidence["kind"].(string)
 		if !inStrings([]string{"field-value-match", "state-change", "visible", "hidden", "expanded", "collapsed", "selected", "ready"}, kind) {
 			return fmt.Errorf("预期效果类型非法")
 		}
+		if kind != "field-value-match" && kind != "state-change" {
+			if id, ok := evidence["nodeId"].(string); !ok || id == "" {
+				return fmt.Errorf("节点效果缺少 nodeId，请引用已投影的当前目标节点")
+			}
+		}
 		for key, value := range evidence {
 			if key == "nodeId" {
 				id, ok := value.(string)
-				if !ok || !inStrings(req.ProjectedNodeIDs, id) {
+				if !ok || !inStrings(projected, id) {
 					return fmt.Errorf("效果引用未投影节点")
 				}
 			} else if key != "kind" {

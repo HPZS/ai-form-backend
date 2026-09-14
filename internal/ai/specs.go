@@ -112,6 +112,9 @@ func validateAgentStepOutput(req *AgentStepReq, content string) (agentStepOutput
 	if out.Explanation == "" {
 		return out, fmt.Errorf("AgentStep 缺少 explanation")
 	}
+	if err := validateExpectedEvidence(out.ExpectedEvidence, req.ProjectedNodeIDs); err != nil {
+		return out, err
+	}
 	switch out.Status {
 	case "need-adapter":
 		if !req.AdapterLearningAvailable || req.GoalKind != "set-field-value" || req.RuntimeHandoff != nil {
@@ -477,25 +480,8 @@ func validateAgentRowPlanOutput(req *AgentRowPlanReq, content string) (agentRowP
 				return out, fmt.Errorf("run-skill 只能绑定当前 Goal 值")
 			}
 		}
-		for _, evidence := range step.ExpectedEvidence {
-			if len(evidence) == 0 {
-				return out, fmt.Errorf("expectedEvidence 为空")
-			}
-			for key, value := range evidence {
-				if key != "kind" && key != "nodeId" {
-					return out, fmt.Errorf("expectedEvidence 包含 unknown field %q", key)
-				}
-				if key == "nodeId" {
-					id, ok := value.(string)
-					if !ok || !inStrings(goal.EvidenceNodeIDs, id) {
-						return out, fmt.Errorf("expectedEvidence 跨 Goal 或不在证据作用域")
-					}
-				}
-			}
-			kind, ok := evidence["kind"].(string)
-			if !ok || strings.TrimSpace(kind) == "" {
-				return out, fmt.Errorf("expectedEvidence.kind 不能为空")
-			}
+		if err := validateExpectedEvidence(step.ExpectedEvidence, goal.EvidenceNodeIDs); err != nil {
+			return out, fmt.Errorf("expectedEvidence 当前 Goal 校验失败: %w", err)
 		}
 	}
 	for _, goalID := range out.DeferredGoalIDs {
