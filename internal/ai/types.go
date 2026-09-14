@@ -14,6 +14,8 @@ import (
 
 // Meta 每个请求携带的公共元信息。
 type Meta struct {
+	WorkID                 string `json:"workId,omitempty"`
+	RecoveryGroupID        string `json:"recoveryGroupId,omitempty"`
 	ModelPolicy            string `json:"modelPolicy,omitempty"`
 	CallPhase              string `json:"callPhase,omitempty"`
 	HandoffID              string `json:"handoffId,omitempty"`
@@ -28,6 +30,14 @@ type Meta struct {
 func (m *Meta) GetMeta() *Meta { return m }
 
 func (m *Meta) validateMeta() error {
+	if m.WorkID != "" {
+		if _, err := uuid.Parse(m.WorkID); err != nil {
+			return fmt.Errorf("workId 必须是 uuid")
+		}
+	}
+	if err := capStr("recoveryGroupId", m.RecoveryGroupID, 128); err != nil {
+		return err
+	}
 	if _, err := uuid.Parse(m.RequestID); err != nil {
 		return fmt.Errorf("requestId 必须是 uuid")
 	}

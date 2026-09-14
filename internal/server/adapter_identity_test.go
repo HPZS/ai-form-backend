@@ -23,7 +23,7 @@ func TestAdapterCapabilityAndStableIdentity(t *testing.T) {
 		return out
 	}
 	about := decode(do(t, router, "", "GET", "/v1/about", "").Body.String())
-	if about["apiRevision"] != float64(21) || about["adapterProtocolVersion"] != float64(1) {
+	if about["apiRevision"] != float64(22) || about["adapterProtocolVersion"] != float64(1) || about["aiExecutionProtocolVersion"] != float64(1) {
 		t.Fatalf("适配能力必须显式协商: %v", about)
 	}
 	me := decode(do(t, router, token, "GET", "/v1/me", "").Body.String())

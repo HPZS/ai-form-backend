@@ -69,7 +69,7 @@ func Migrate(db *gorm.DB) error {
 		&User{}, &EmailCode{}, &RefreshToken{}, &SsoCode{},
 		&SubscriptionPlan{}, &UserSubscription{}, &PaymentOrder{},
 		&AIDefault{}, &CapabilityPrice{}, &AIUpstream{}, &CreditLedger{}, &CreditHold{},
-		&AIRequest{}, &TaskMetric{}, &BillingGroupCharge{},
+		&AIRequest{}, &AIRequestCancellation{}, &AIExecutionBudget{}, &TaskMetric{}, &BillingGroupCharge{},
 	); err != nil {
 		return fmt.Errorf("迁移失败: %w", err)
 	}

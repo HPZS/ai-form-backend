@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -76,6 +77,7 @@ func (s Spec) ProtocolRepairMessage(req Request, validation error) string {
 }
 
 type Gateway struct {
+	executions    sync.Map
 	billingV2     bool
 	digestKey     []byte
 	billingPaused bool

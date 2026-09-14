@@ -95,11 +95,32 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 				return credits.ErrConflict
 			}
 			replay = true
+			cancelled, cancelErr := cancellationRequested(tx, userID, meta.RequestID, meta.TaskID)
+			if cancelErr != nil {
+				return cancelErr
+			}
+			if cancelled && r.Status == model.AIReqPending {
+				if time.Now().After(r.LeaseExpiresAt) {
+					if err := credits.ReleaseRequest(tx, &r); err != nil {
+						return err
+					}
+					r.Status, r.BillingReason, r.FailureCode = credits.RequestFailed, "execution_cancelled", "AI_CANCELLED"
+					return tx.Save(&r).Error
+				}
+				return nil
+			}
 			if r.PolicyVersion != credits.PolicyV2 && r.Status == model.AIReqPending && time.Now().After(r.LeaseExpiresAt) {
 				r.Status, r.BillingReason = credits.RequestFailed, "legacy_execution_expired"
 				return tx.Save(&r).Error
 			}
 			if r.PolicyVersion == credits.PolicyV2 && r.Status == model.AIReqPending && time.Now().After(r.LeaseExpiresAt) {
+				if hasUnfinishedAttempt(&r) {
+					if err := credits.ReleaseRequest(tx, &r); err != nil {
+						return err
+					}
+					r.Status, r.BillingReason, r.FailureCode = credits.RequestFailed, "execution_uncertain", "AI_EXECUTION_UNCERTAIN"
+					return tx.Save(&r).Error
+				}
 				if r.ExecutionAttempts >= 3 || time.Since(r.CreatedAt) > 10*time.Minute {
 					if err := credits.ReleaseRequest(tx, &r); err != nil {
 						return err
@@ -115,6 +136,11 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 		}
 		if !errors.Is(found, gorm.ErrRecordNotFound) {
 			return found
+		}
+		if cancelled, err := cancellationRequested(tx, userID, meta.RequestID, meta.TaskID); err != nil {
+			return err
+		} else if cancelled {
+			return context.Canceled
 		}
 		var p model.CapabilityPrice
 		if err := tx.Where("capability = ?", spec.Name).First(&p).Error; err != nil {
@@ -140,6 +166,7 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 			return credits.ErrNoActiveSub
 		}
 		r = model.AIRequest{UserID: userID, RequestID: meta.RequestID, TaskID: meta.TaskID, Capability: spec.Name, PolicyVersion: credits.PolicyV2,
+			WorkID: meta.WorkID, RecoveryGroupID: meta.RecoveryGroupID,
 			CallPhase: meta.CallPhase, HandoffID: meta.HandoffID, CompilationID: meta.CompilationID,
 			BillingMode: p.BillingMode, PriceVersion: p.PriceVersion, UnitPrice: p.Credits, AuthorizationVersion: meta.AuthorizationVersion, RequestDigest: digest,
 			Status: model.AIReqPending, LeaseToken: uuid.NewString(), LeaseExpiresAt: time.Now().Add(leaseTTL), ExecutionAttempts: 1, CreatedAt: time.Now()}
@@ -156,6 +183,10 @@ func (g *Gateway) handleBillingV2(c *gin.Context, spec Spec, req Request) {
 	})
 	if errors.Is(err, errBillingPaused) {
 		apiErr(c, 503, "BILLING_PAUSED", "新的积分调用暂时暂停，历史结果和订阅包含能力仍可用")
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		apiErr(c, 409, "AI_CANCELLED", "请求已取消，未启动新的模型调用")
 		return
 	}
 	if errors.Is(err, errClientUpgrade) {
@@ -202,7 +233,7 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), CallChainTimeout)
+	ctx, cancel := g.executionContext(r)
 	defer cancel()
 	var attempts []AttemptUsage
 	if r.UsageDetails != "" {
@@ -211,24 +242,10 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 			return
 		}
 	}
-	ctx = withUsageObserver(ctx, func(item AttemptUsage) {
-		attempts = append(attempts, item)
-		// 每次上游结束即持久化，进程中断仍能追溯已发生的技术尝试。
-		raw, err := json.Marshal(attempts)
-		if err != nil {
-			log.Printf("[AI-USAGE-ENCODE] request=%s err=%v", r.RequestID, err)
-			return
-		}
-		r.UsageDetails = string(raw)
-		r.InputTokens, r.OutputTokens = 0, 0
-		for _, a := range attempts {
-			r.InputTokens += a.InputTokens
-			r.OutputTokens += a.OutputTokens
-		}
-		if err = g.db.Model(&model.AIRequest{}).Where("id = ? AND lease_token = ?", r.ID, r.LeaseToken).Updates(map[string]any{"usage_details": r.UsageDetails, "input_tokens": r.InputTokens, "output_tokens": r.OutputTokens}).Error; err != nil {
-			log.Printf("[AI-USAGE-PERSIST] request=%s err=%v", r.RequestID, err)
-		}
-	})
+	if r.UsageDetails == "" {
+		r.UsageDetails = "[]"
+	}
+	ctx = g.withExecutionBudget(ctx, r)
 	var result any
 	usage := CallResult{}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -250,6 +267,7 @@ func (g *Gateway) executeV2(spec Spec, req Request, r *model.AIRequest) {
 		if err == nil {
 			break
 		}
+		err = &outputValidationError{err}
 		log.Printf("[AI-V2-INVALID] request=%s attempt=%d reason=%s", r.RequestID, attempt+1, safeValidationReason(err))
 		messages = append(messages, ChatMessage{Role: "user", Content: spec.ProtocolRepairMessage(req, err)})
 	}
@@ -314,10 +332,26 @@ func (g *Gateway) failV2(r *model.AIRequest, reason string, cause error) {
 		if current.Status != model.AIReqPending || current.LeaseToken != r.LeaseToken {
 			return errLeaseLost
 		}
+		if reason == "execution_expired" {
+			// 与取消登记在同一用户锁下裁决，恢复不能把未知上游尝试变成可自动重试的普通失败。
+			cancelled, err := cancellationRequested(tx, current.UserID, current.RequestID, current.TaskID)
+			if err != nil {
+				return err
+			}
+			if cancelled {
+				cause = context.Canceled
+				reason = "execution_cancelled"
+			} else if hasUnfinishedAttempt(&current) {
+				cause = &executionBudgetError{"AI_EXECUTION_UNCERTAIN"}
+				reason = "execution_uncertain"
+			}
+			r.UsageDetails, r.InputTokens, r.OutputTokens = current.UsageDetails, current.InputTokens, current.OutputTokens
+		}
 		if err := credits.ReleaseRequest(tx, &current); err != nil {
 			return err
 		}
 		current.Status, current.BillingReason = credits.RequestFailed, reason
+		current.FailureCode = aiFailureCode(cause)
 		current.UsageDetails = r.UsageDetails
 		current.InputTokens, current.OutputTokens = r.InputTokens, r.OutputTokens
 		current.Model, current.Upstream = r.Model, r.Upstream
@@ -395,7 +429,24 @@ func (g *Gateway) billingView(r *model.AIRequest, replayed bool) (gin.H, error) 
 	return gin.H{"policyVersion": r.PolicyVersion, "taskId": r.TaskID, "requestId": r.RequestID, "authorizationVersion": r.AuthorizationVersion, "mode": r.BillingMode,
 		"callPhase": r.CallPhase, "handoffId": r.HandoffID, "compilationId": r.CompilationID, "modelCalls": requestModelCalls(r),
 		"status": status, "reason": r.BillingReason, "unitPrice": r.UnitPrice, "priceVersion": r.PriceVersion, "settledCredits": r.Credits, "refundedCredits": refund, "replayed": replayed,
-		"balanceAsOf": time.Now(), "cacheExpiresAt": r.CacheExpiresAt, "reservedCredits": r.ReservedCredits, "inputTokens": r.InputTokens, "outputTokens": r.OutputTokens, "costStatus": "unknown"}, nil
+		"balanceAsOf": time.Now(), "cacheExpiresAt": r.CacheExpiresAt, "reservedCredits": r.ReservedCredits, "inputTokens": r.InputTokens, "outputTokens": r.OutputTokens, "usageComplete": requestUsageComplete(r), "costStatus": "unknown"}, nil
+}
+
+func requestUsageComplete(r *model.AIRequest) bool {
+	if r.UsageDetails == "" {
+		return false
+	}
+	var attempts []AttemptUsage
+	if err := json.Unmarshal([]byte(r.UsageDetails), &attempts); err != nil {
+		log.Printf("[AI-USAGE-COMPLETENESS] request=%s err=%v", r.RequestID, err)
+		return false
+	}
+	for _, attempt := range attempts {
+		if !attempt.UsageKnown {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Gateway) respondV2(c *gin.Context, r *model.AIRequest, replayed, withBilling bool) {
@@ -405,7 +456,28 @@ func (g *Gateway) respondV2(c *gin.Context, r *model.AIRequest, replayed, withBi
 			apiErr(c, 409, "REQUEST_IN_FLIGHT", "原请求仍在处理，请查询原请求")
 			return
 		}
-		apiErr(c, 422, "AI_OUTPUT_INVALID", "原请求未成功，未新增扣费；重新尝试请发起新调用")
+		code := r.FailureCode
+		if code == "" {
+			code = "AI_REQUEST_FAILED"
+		}
+		status, message := aiFailureResponse(code)
+		billing, err := g.billingView(r, replayed)
+		if err != nil {
+			BillingError(c, err)
+			return
+		}
+		response := gin.H{"error": code, "message": message, "billing": billing, "requestId": r.RequestID}
+		if code == "AI_RECOVERY_BUDGET_EXHAUSTED" || code == "AI_TASK_BUDGET_EXHAUSTED" {
+			var budget model.AIExecutionBudget
+			if err := g.db.Where("user_id = ? AND work_id = ?", r.UserID, executionScope(r)).First(&budget).Error; err != nil {
+				g.internalErr(c, r.RequestID, r.Capability, "read-execution-budget", err)
+				return
+			}
+			view := executionBudgetView(budget)
+			view["groupId"] = recoveryGroup(r)
+			response["executionBudget"] = view
+		}
+		c.JSON(status, response)
 		return
 	}
 	billing, err := g.billingView(r, replayed)
@@ -488,7 +560,7 @@ func (g *Gateway) RecoverBillingV2() error {
 				log.Printf("[BILLING-RECOVERY] request=%s err=%v", r.RequestID, err)
 			}
 		} else {
-			g.failV2(r, "execution_failed", fmt.Errorf("执行租约已过期"))
+			g.failV2(r, "execution_expired", fmt.Errorf("执行租约已过期"))
 		}
 	}
 	return nil

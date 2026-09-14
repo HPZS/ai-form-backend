@@ -237,7 +237,18 @@ const (
 	AIReqUpstreamError = "upstream_error"
 )
 
+// 取消可能先于原请求到达；独立记录避免创建伪造的计费/执行流水。
+type AIRequestCancellation struct {
+	ID        int64  `gorm:"primaryKey"`
+	UserID    int64  `gorm:"uniqueIndex:idx_ai_cancel_owner_request;not null"`
+	RequestID string `gorm:"size:36;uniqueIndex:idx_ai_cancel_owner_request;not null"`
+	TaskID    string `gorm:"size:36"`
+	CreatedAt time.Time
+}
+
 type AIRequest struct {
+	WorkID               string `gorm:"size:36;index"`
+	RecoveryGroupID      string `gorm:"size:128"`
 	CallPhase            string `gorm:"size:32"`
 	HandoffID            string `gorm:"size:128"`
 	CompilationID        string `gorm:"size:128"`
@@ -252,6 +263,7 @@ type AIRequest struct {
 	BillingReason        string             `gorm:"size:64"`
 	ExecutionAttempts    int
 	UsageDetails         string `gorm:"type:text"`
+	FailureCode          string `gorm:"size:64"` // 稳定执行错误类别；不以计费结果代替技术原因。
 	ResultCreatedAt      *time.Time
 	CacheExpiresAt       *time.Time `gorm:"index"`
 	ID                   int64      `gorm:"primaryKey"`
@@ -276,6 +288,30 @@ type AIRequest struct {
 	LatencyMs     int
 	ResponseCache string    `gorm:"type:text"` // 幂等重放用,定时清除
 	CreatedAt     time.Time `gorm:"index"`
+}
+
+// 同一工作在所有能力/恢复请求之间共享执行预算，与积分授权分开。
+type AIExecutionBudgetExtension struct {
+	ExpectedRevision int    `json:"expectedRevision"`
+	GroupID          string `json:"groupId"`
+}
+
+type AIExecutionBudget struct {
+	ID                int64  `gorm:"primaryKey"`
+	UserID            int64  `gorm:"uniqueIndex:idx_ai_budget_owner_work;not null"`
+	WorkID            string `gorm:"size:36;uniqueIndex:idx_ai_budget_owner_work;not null"`
+	Attempts          int
+	KnownTokens       int64
+	ReservedTokens    int64
+	WaitMs            int64
+	ReservedWaitMs    int64
+	MaxAttempts       int
+	MaxTokens         int64
+	MaxWaitMs         int64
+	Groups            map[string]int `gorm:"serializer:json;type:text"`
+	GroupExtra        map[string]int `gorm:"serializer:json;type:text"`
+	Extensions        int
+	ExtensionRequests map[string]AIExecutionBudgetExtension `gorm:"serializer:json;type:text"`
 }
 
 // TaskMetric 插件任务结束上报的统计,不含业务原文。

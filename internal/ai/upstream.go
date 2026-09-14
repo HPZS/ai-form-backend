@@ -70,17 +70,21 @@ type CallResult struct {
 	Model        string
 	InputTokens  int
 	OutputTokens int
+	UsageKnown   bool
 }
 
 // AttemptUsage 仅记录技术计量，不保存提示词、模型业务原文或密钥。
 type AttemptUsage struct {
-	Upstream     string `json:"upstream"`
-	Model        string `json:"model"`
-	Status       string `json:"status"`
-	InputTokens  int    `json:"inputTokens"`
-	OutputTokens int    `json:"outputTokens"`
-	DurationMs   int64  `json:"durationMs"`
-	CostStatus   string `json:"costStatus"`
+	Upstream       string `json:"upstream"`
+	Model          string `json:"model"`
+	Status         string `json:"status"`
+	InputTokens    int    `json:"inputTokens"`
+	OutputTokens   int    `json:"outputTokens"`
+	DurationMs     int64  `json:"durationMs"`
+	CostStatus     string `json:"costStatus"`
+	UsageKnown     bool   `json:"usageKnown"`
+	ReservedTokens int64  `json:"reservedTokens,omitempty"`
+	ReservedWaitMs int64  `json:"reservedWaitMs,omitempty"`
 }
 type usageObserverKey struct{}
 
@@ -242,39 +246,63 @@ func (c *Caller) Call(ctx context.Context, capability string, messages []ChatMes
 	// 错因也要逐家收集:只留最后一家的 lastErr 会把前面几家的真实原因
 	//(401 密钥失效 / 超时 / 响应格式异常)全部丢掉,而它们往往才是根因。
 	var errs []string
+	var causes []error
 	for _, up := range ups {
+		if err := checkDispatchContext(ctx); err != nil {
+			return nil, err
+		}
 		if c.cooling(up.ID) {
 			log.Printf("[AI-UPSTREAM] 跳过冷却中的上游 name=%s capability=%s", up.Name, capability)
 			errs = append(errs, fmt.Sprintf("上游 %s 冷却中", up.Name))
 			continue
 		}
 		started := time.Now()
-		res, err := c.callOnce(ctx, up, params, messages)
-		if observe, ok := ctx.Value(usageObserverKey{}).(func(AttemptUsage)); ok {
+		attemptContext := ctx
+		var finish func(AttemptUsage) error
+		if start, ok := ctx.Value(modelAttemptKey{}).(startModelAttempt); ok {
+			attemptContext, finish, err = start(ctx, up, params, messages)
+			if err != nil {
+				return nil, err
+			}
+		}
+		res, err := c.callOnce(attemptContext, up, params, messages)
+		{
 			item := AttemptUsage{Upstream: up.Name, Model: params.Model, Status: "failed", DurationMs: time.Since(started).Milliseconds(), CostStatus: "unknown"}
 			if res != nil {
 				item.Model = res.Model
 				item.InputTokens = res.InputTokens
 				item.OutputTokens = res.OutputTokens
+				item.UsageKnown = res.UsageKnown
 			}
 			if err == nil {
 				item.Status = "responded"
 			}
-			observe(item)
+			if finish != nil {
+				if finishErr := finish(item); finishErr != nil {
+					return res, fmt.Errorf("模型用量持久化失败: %w", finishErr)
+				}
+			}
+			if observe, ok := ctx.Value(usageObserverKey{}).(func(AttemptUsage)); ok {
+				observe(item)
+			}
 		}
 		if err == nil {
 			c.markOK(up.ID)
 			return res, nil
+		}
+		if _, managed := ctx.Value(modelAttemptKey{}).(startModelAttempt); managed && aiFailureCode(err) == "AI_UPSTREAM_AUTH_FAILED" {
+			return nil, err
 		}
 		log.Printf("[AI-UPSTREAM] 上游调用失败,切换下一家 name=%s capability=%s err=%v", up.Name, capability, err)
 		if c.markFail(up.ID) {
 			log.Printf("[AI-UPSTREAM-ALERT] 上游连续失败 %d 次,进入 %v 冷却 name=%s", coolAfterFails, coolDuration, up.Name)
 		}
 		errs = append(errs, err.Error())
+		causes = append(causes, err)
 	}
 	log.Printf("[AI-UPSTREAM-ALERT] 全部上游不可用 capability=%s 上游数=%d 错因=%s",
 		capability, len(ups), strings.Join(errs, " | "))
-	return nil, fmt.Errorf("%w: %s", ErrAllUpstreamsDown, strings.Join(errs, " | "))
+	return nil, errors.Join(append([]error{fmt.Errorf("%w: %s", ErrAllUpstreamsDown, strings.Join(errs, " | "))}, causes...)...)
 }
 
 type chatRequest struct {
@@ -292,9 +320,9 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+	Usage *struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
 	} `json:"usage"`
 }
 
@@ -326,14 +354,24 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		return nil, fmt.Errorf("上游 %s 读响应失败: %w", up.Name, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("上游 %s 返回 %d: %.200s", up.Name, resp.StatusCode, string(data))
+		return nil, upstreamStatusError(up.Name, resp.StatusCode, data)
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(data, &cr); err != nil {
 		return nil, fmt.Errorf("上游 %s 响应格式异常: %w", up.Name, err)
 	}
+	inputTokens, outputTokens := 0, 0
+	usageKnown := cr.Usage != nil && cr.Usage.PromptTokens != nil && cr.Usage.CompletionTokens != nil && *cr.Usage.PromptTokens >= 0 && *cr.Usage.CompletionTokens >= 0
+	if cr.Usage != nil {
+		if cr.Usage.PromptTokens != nil && *cr.Usage.PromptTokens >= 0 {
+			inputTokens = *cr.Usage.PromptTokens
+		}
+		if cr.Usage.CompletionTokens != nil && *cr.Usage.CompletionTokens >= 0 {
+			outputTokens = *cr.Usage.CompletionTokens
+		}
+	}
 	if len(cr.Choices) == 0 {
-		return &CallResult{Upstream: up.Name, Model: params.Model, InputTokens: cr.Usage.PromptTokens, OutputTokens: cr.Usage.CompletionTokens}, fmt.Errorf("上游 %s 返回空 choices", up.Name)
+		return &CallResult{Upstream: up.Name, Model: params.Model, InputTokens: inputTokens, OutputTokens: outputTokens, UsageKnown: usageKnown}, fmt.Errorf("上游 %s 返回空 choices", up.Name)
 	}
 	// 上游换了模型:JSON 能力的输出质量与计量归因都会跟着变,审计字段记的是"意愿"而非事实
 	if cr.Model != "" && cr.Model != params.Model {
@@ -348,7 +386,8 @@ func (c *Caller) callOnce(ctx context.Context, up model.AIUpstream, params callP
 		Truncated:    cr.Choices[0].FinishReason == "length",
 		Upstream:     up.Name,
 		Model:        actualModel,
-		InputTokens:  cr.Usage.PromptTokens,
-		OutputTokens: cr.Usage.CompletionTokens,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		UsageKnown:   usageKnown,
 	}, nil
 }

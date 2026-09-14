@@ -74,6 +74,7 @@ func setupGateway(t *testing.T, upstream *httptest.Server, v2 ...bool) (*gin.Eng
 		servedSet[cap] = true
 	}
 	r := gin.New()
+	r.POST("/requests/:id/cancel", func(c *gin.Context) { c.Set("userID", u.ID); c.Next() }, g.CancelRequest)
 	for _, sp := range Specs() {
 		if servedSet[sp.Name] {
 			r.POST("/ai/"+strings.ReplaceAll(sp.Name, "_", "-"), func(c *gin.Context) {

@@ -67,7 +67,7 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev16: 新增独立的资料图像区域识别与复核契约。
 // rev20: 完整来源、样本行和列统计统一支持 1024 列。
 // rev21: 适配程序编译、模型策略、调用阶段以及稳定用户主体。
-const APIRevision = 21
+const APIRevision = 22
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。
@@ -162,6 +162,9 @@ func New(db *gorm.DB, cfg *config.Config, authSvc *auth.Service, mailer *email.M
 			u.GET("/billing/tasks/:id", s.billingTask)
 			u.GET("/billing/requests", s.billingRequests)
 			u.GET("/billing/requests/:id", s.gateway.QueryRequest)
+			u.POST("/billing/requests/:id/cancel", s.gateway.CancelRequest)
+			u.GET("/billing/ai-budgets/:id", s.gateway.QueryExecutionBudget)
+			u.POST("/billing/ai-budgets/:id/extend", s.gateway.ExtendExecutionBudget)
 			u.POST("/credits/estimate", s.estimate)
 			u.POST("/credits/holds", s.createHold)
 			u.PATCH("/credits/holds/:id/heartbeat", s.heartbeat)
@@ -1269,6 +1272,7 @@ func (s *Server) about(c *gin.Context) {
 		"name":                       "ai-form-backend",
 		"apiRevision":                APIRevision,
 		"adapterProtocolVersion":     1,
+		"aiExecutionProtocolVersion": 1,
 		"adapterRuntimeVersions":     []string{"adapter-runtime-v1"},
 		"interactionProtocolVersion": 1,
 		"billingProtocolVersion":     2,
