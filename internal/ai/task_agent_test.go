@@ -44,9 +44,9 @@ func TestTaskAgentLearningRequiresExplicitCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, enabled := range []bool{false, true} {
-		req := &TaskAgentReq{SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", AdapterLearningAvailable: enabled}
+		req := &TaskAgentReq{SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", AdapterLearningAvailable: enabled, AdapterLearningRecords: 8}
 		_, prompt, _, err := store.Render("agent_task_step", req)
-		if err != nil || strings.Contains(prompt, "need-adapter") != enabled {
+		if err != nil || strings.Contains(prompt, "need-adapter") != enabled || strings.Contains(prompt, "尚有 8 条记录") != enabled {
 			t.Fatalf("旧客户端不得看到新增学习状态: enabled=%v err=%v", enabled, err)
 		}
 		value := `{"schemaVersion":"v1","runId":"run","snapshotId":"snapshot","contextDigest":"digest","status":"need-adapter","explanation":"当前有重复分支流程，申请学习局部程序"}`
@@ -65,7 +65,7 @@ func TestTaskAgentPromptAndRequestLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, user, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v5" || !strings.Contains(user, "read_source") || !strings.Contains(user, "advance_form") {
+	if _, user, version, err := store.Render("agent_task_step", &TaskAgentReq{}); err != nil || version != "v6" || !strings.Contains(user, "read_source") || !strings.Contains(user, "advance_form") {
 		t.Fatalf("prompt: %s %v", version, err)
 	}
 	req := &TaskAgentReq{Meta: Meta{RequestID: "00000000-0000-4000-8000-000000000001", TaskID: "task"}, SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", CallIndex: 1, SaveMode: "automatic", Tools: []TaskToolDescription{{Name: "read", Effect: "read"}}}

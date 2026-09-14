@@ -297,6 +297,7 @@ type GoalValueObservation struct {
 type AgentStepReq struct {
 	Meta
 	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
+	AdapterLearningRecords   int                    `json:"adapterLearningRecords,omitempty"`
 	RuntimeHandoff           *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
 	ValueObservations        []GoalValueObservation `json:"valueObservations,omitempty"`
 	InteractionVersion       int                    `json:"interactionVersion,omitempty"`
@@ -505,6 +506,9 @@ func checkStringList(name string, values []string, max, maxLen int) error {
 }
 
 func (r *AgentStepReq) Validate() error {
+	if r.AdapterLearningRecords < 0 || r.AdapterLearningRecords > 1000000 || r.AdapterLearningRecords > 0 && !r.AdapterLearningAvailable {
+		return fmt.Errorf("程序学习记录数或能力上下文无效")
+	}
 	if err := r.validateInteraction(); err != nil {
 		return err
 	}

@@ -32,6 +32,7 @@ type TaskFieldSummary struct {
 type TaskAgentReq struct {
 	Meta
 	AdapterLearningAvailable bool                   `json:"adapterLearningAvailable,omitempty"`
+	AdapterLearningRecords   int                    `json:"adapterLearningRecords,omitempty"`
 	RuntimeHandoff           *AdapterHandoffContext `json:"runtimeHandoff,omitempty"`
 	SchemaVersion            string                 `json:"schemaVersion"`
 	RunID                    string                 `json:"runId"`
@@ -70,6 +71,9 @@ func TaskAgentRepairMessage(req Request, validation error) string {
 }
 
 func (r *TaskAgentReq) Validate() error {
+	if r.AdapterLearningRecords < 0 || r.AdapterLearningRecords > 1000000 || r.AdapterLearningRecords > 0 && !r.AdapterLearningAvailable {
+		return fmt.Errorf("程序学习记录数或能力上下文无效")
+	}
 	if err := r.validateMeta(); err != nil {
 		return err
 	}

@@ -16,8 +16,8 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染 agent_step 提示词失败: %v", err)
 	}
-	if version != "v8" {
-		t.Fatalf("提示词版本应为 v8，实际 %q", version)
+	if version != "v9" {
+		t.Fatalf("提示词版本应为 v9，实际 %q", version)
 	}
 	for _, want := range []string{`"status":"act"`, `"status":"done"`, `"status":"need-context"`, "未使用字段必须省略"} {
 		if !strings.Contains(user, want) {
@@ -32,8 +32,9 @@ func TestAgentStepPromptUsesConcreteMutuallyExclusiveExamples(t *testing.T) {
 	}
 	req := validAgentReq()
 	req.AdapterLearningAvailable = true
+	req.AdapterLearningRecords = 8
 	_, learningPrompt, _, err := store.Render("agent_step", req)
-	if err != nil || !strings.Contains(learningPrompt, `"status":"need-adapter"`) {
+	if err != nil || !strings.Contains(learningPrompt, `"status":"need-adapter"`) || !strings.Contains(learningPrompt, "尚有 8 条记录") || !strings.Contains(learningPrompt, "完整交互") {
 		t.Fatalf("新客户端必须获得按需学习选项: %v", err)
 	}
 }
@@ -245,5 +246,21 @@ func TestAgentStepRequestLimits(t *testing.T) {
 	req.Projection = strings.Repeat("x", 512*1024+1)
 	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "512 KiB") {
 		t.Fatalf("超大投影未拒绝: %v", err)
+	}
+}
+
+func TestLearningRecordCountRequiresValidCapability(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, count := range []int{-1, 0, 8, 1000001} {
+			field := validAgentReq()
+			field.AdapterLearningAvailable, field.AdapterLearningRecords = enabled, count
+			task := &TaskAgentReq{Meta: Meta{RequestID: "00000000-0000-4000-8000-000000000001", TaskID: "task"}, SchemaVersion: "v1", RunID: "run", SnapshotID: "snapshot", ContextDigest: "digest", CallIndex: 1, SaveMode: "automatic", Tools: []TaskToolDescription{{Name: "read", Effect: "read"}}, AdapterLearningAvailable: enabled, AdapterLearningRecords: count}
+			valid := count == 0 || enabled && count == 8
+			for _, req := range []Request{field, task} {
+				if err := req.Validate(); (err == nil) != valid {
+					t.Fatalf("request=%T enabled=%v count=%d err=%v", req, enabled, count, err)
+				}
+			}
+		}
 	}
 }
