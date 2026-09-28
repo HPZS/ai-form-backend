@@ -68,7 +68,8 @@ const sourceRepo = "https://github.com/HPZS/ai-form-backend"
 // rev20: 完整来源、样本行和列统计统一支持 1024 列。
 // rev21: 适配程序编译、模型策略、调用阶段以及稳定用户主体。
 // rev23: 字段动作不适用时由声明版本的客户端恢复，保留共享预算及旧客户端行为。
-const APIRevision = 23
+// rev24: 字段动作拒绝恢复独立于程序学习许可，闭合控件先交还宿主观察，不重复原语生成。
+const APIRevision = 24
 
 // internalErr 统一的 500 出口:客户端只看到 INTERNAL,根因必须落到服务端日志——
 // 否则线上每一次 INTERNAL 都无从定位,访问日志里只剩一个状态码。

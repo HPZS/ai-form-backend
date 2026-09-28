@@ -13,15 +13,17 @@ func TestActionRecoveryOptInReturnsKnownRejectionWithoutProtocolRetry(t *testing
 	for _, test := range []struct {
 		name       string
 		version    int
+		learning   bool
 		invalidRef bool
 		wantCalls  int32
 		wantStatus int
 		wantCode   string
 	}{
-		{"新版本地恢复", 1, false, 1, 422, "AI_ACTION_NOT_APPLICABLE"},
-		{"旧客户端保留修复", 0, false, 2, 422, "AI_OUTPUT_INVALID"},
-		{"句柄不合法仍属协议错误", 1, true, 2, 422, "AI_OUTPUT_INVALID"},
-		{"未知恢复版本零分发", 2, false, 0, 400, "BAD_REQUEST"},
+		{"新版本地恢复", 1, true, false, 1, 422, "AI_ACTION_NOT_APPLICABLE"},
+		{"闭合控件未开放学习仍返回可恢复拒绝", 1, false, false, 1, 422, "AI_ACTION_NOT_APPLICABLE"},
+		{"旧客户端保留修复", 0, true, false, 2, 422, "AI_OUTPUT_INVALID"},
+		{"句柄不合法仍属协议错误", 1, true, true, 2, 422, "AI_OUTPUT_INVALID"},
+		{"未知恢复版本零分发", 2, true, false, 0, 400, "BAD_REQUEST"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -37,7 +39,7 @@ func TestActionRecoveryOptInReturnsKnownRejectionWithoutProtocolRetry(t *testing
 			router, _, _, task, auth := v2Fixture(t, upstream)
 			req := validAgentReq()
 			req.ReadOnlyNodeIDs = []string{"n1"}
-			req.AdapterLearningAvailable = true
+			req.AdapterLearningAvailable = test.learning
 			raw, err := json.Marshal(req)
 			if err != nil {
 				t.Fatal(err)
@@ -68,15 +70,13 @@ func TestActionRecoveryOptInReturnsKnownRejectionWithoutProtocolRetry(t *testing
 	}
 }
 
-func TestActionRecoveryRequiresCurrentHostLearningCapability(t *testing.T) {
-	for _, mode := range []string{"unavailable", "other-goal", "handoff"} {
+func TestActionRecoveryRequiresFieldContextWithoutRuntimeHandoff(t *testing.T) {
+	for _, mode := range []string{"other-goal", "handoff"} {
 		t.Run(mode, func(t *testing.T) {
 			req := validAgentReq()
 			req.ActionRecoveryVersion = 1
 			req.AdapterLearningAvailable = true
 			switch mode {
-			case "unavailable":
-				req.AdapterLearningAvailable = false
 			case "other-goal":
 				req.GoalKind = "open-form"
 			case "handoff":
@@ -85,8 +85,8 @@ func TestActionRecoveryRequiresCurrentHostLearningCapability(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "动作恢复版本或当前学习能力无效") {
-				t.Fatalf("不满足首次学习条件时应拒绝动作恢复：%v", err)
+			if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "动作恢复版本或当前字段上下文无效") {
+				t.Fatalf("非字段目标或显式程序接管不能声明此动作恢复：%v", err)
 			}
 		})
 	}
